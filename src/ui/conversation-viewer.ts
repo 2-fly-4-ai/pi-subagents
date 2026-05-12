@@ -16,6 +16,8 @@ import { type AgentActivity, buildInvocationTags, describeActivity, formatDurati
 /** Base lines consumed by chrome: top border + header + header sep + footer sep + footer + bottom border. */
 const CHROME_LINES_BASE = 6;
 const MIN_VIEWPORT = 3;
+/** Height ceiling shared by the overlay's `maxHeight` and the viewer's internal viewport cap. */
+export const VIEWPORT_HEIGHT_PCT = 70;
 
 export class ConversationViewer implements Component {
   private scrollOffset = 0;
@@ -160,9 +162,9 @@ export class ConversationViewer implements Component {
   // ---- Private ----
 
   private viewportHeight(): number {
-    // Cap at 70% of terminal height to match the overlay's maxHeight — otherwise
-    // the viewer would render more lines than the overlay shows, clipping the footer.
-    const maxRows = Math.floor(this.tui.terminal.rows * 0.7);
+    // Cap mirrors the overlay's maxHeight — otherwise the viewer would render
+    // more lines than the overlay shows and clip the footer.
+    const maxRows = Math.floor((this.tui.terminal.rows * VIEWPORT_HEIGHT_PCT) / 100);
     return Math.max(MIN_VIEWPORT, maxRows - this.chromeLines());
   }
 

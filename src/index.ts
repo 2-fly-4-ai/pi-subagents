@@ -1415,7 +1415,7 @@ Guidelines:
       return;
     }
 
-    const { ConversationViewer } = await import("./ui/conversation-viewer.js");
+    const { ConversationViewer, VIEWPORT_HEIGHT_PCT } = await import("./ui/conversation-viewer.js");
     const session = record.session;
     const activity = agentActivity.get(record.id);
 
@@ -1425,7 +1425,7 @@ Guidelines:
       },
       {
         overlay: true,
-        overlayOptions: { anchor: "center", width: "90%", maxHeight: "70%" },
+        overlayOptions: { anchor: "center", width: "90%", maxHeight: `${VIEWPORT_HEIGHT_PCT}%` },
       },
     );
   }
