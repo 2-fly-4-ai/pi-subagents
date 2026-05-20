@@ -9,6 +9,7 @@ import {
   isInsidePath,
   resolveWorkspace,
   validateBashCommand,
+  validateReadPath,
   validateWorkspacePath,
   type WorkspaceIdentity,
 } from "../src/cwd-guard.js";
@@ -42,6 +43,14 @@ describe("cwd guard", () => {
     expect(extractAbsolutePaths("check /Users/me/lago, not relative/path")).toEqual(["/Users/me/lago"]);
   });
 
+  it("does not treat URLs as filesystem paths", () => {
+    expect(extractAbsolutePaths("fetch https://hotmovs.com/embed/3822358 and https://example.com/api/v1")).toEqual([]);
+  });
+
+  it("does not treat JavaScript regex literals as filesystem paths", () => {
+    expect(extractAbsolutePaths("const pats=[/api\\/videofile\\.php/g,/get_file\\/\\d+\\/[^\\s]+/g]")).toEqual([]);
+  });
+
   it("blocks prompt references outside the active workspace", () => {
     const violation = findPromptWorkspaceMismatch("inspect /repo/lago/src/index.ts", workspace);
     expect(violation?.path).toBe("/repo/lago/src/index.ts");
@@ -63,6 +72,14 @@ describe("cwd guard", () => {
   it("blocks bash commands containing outside absolute paths", () => {
     const violation = validateBashCommand("git -C /repo/lago status", workspace);
     expect(violation?.path).toBe("/repo/lago");
+  });
+
+  it("allows bash commands containing URLs", () => {
+    expect(validateBashCommand("python3 -c \"url='https://hotmovs.com/embed/3822358'\"", workspace)).toBeUndefined();
+  });
+
+  it("allows read-only access to skill files", () => {
+    expect(validateReadPath("/Users/me/skill-repos/example/skills/diagnose/SKILL.md", workspace)).toBeUndefined();
   });
 
   it("overrides built-in tool definitions with workspace-guarded versions", async () => {

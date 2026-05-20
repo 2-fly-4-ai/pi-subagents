@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, normalize, relative, resolve } from "node:path";
+import { basename, isAbsolute, normalize, relative, resolve } from "node:path";
 import {
   createBashToolDefinition,
   createEditToolDefinition,
@@ -66,8 +66,23 @@ export function expandPath(path: string): string {
 }
 
 export function extractAbsolutePaths(text: string): string[] {
-  const matches = text.match(/(?<![\w.-])(?:~|\/)[^\s`"'<>|;&]+/g) ?? [];
-  return [...new Set(matches.map(stripTrailingPunctuation).map(expandPath).filter(isAbsolute))];
+  const matches = text.match(/(?<![:/\w.-])(?:~|\/(?!\/))[^\s`"'<>|;&]+/g) ?? [];
+  return [...new Set(matches
+    .map(stripTrailingPunctuation)
+    .filter(candidate => !looksLikeRegexLiteral(candidate))
+    .map(expandPath)
+    .filter(isAbsolute))];
+}
+
+function looksLikeRegexLiteral(path: string): boolean {
+  return path.includes("\\") || /\/(?:[dgimsuy]+)?[,\])}]?$/.test(path);
+}
+
+function isApprovedExternalReadPath(path: string): boolean {
+  const resolved = realpathIfPossible(path);
+  const skillRepoRoot = realpathIfPossible(resolve(homedir(), ".pi", "agent", "skill-repos"));
+  if (isInsidePath(resolved, skillRepoRoot)) return true;
+  return basename(resolved) === "SKILL.md" && resolved.split(/[\\/]+/).includes("skills");
 }
 
 export function resolveToolPath(path: string | undefined, workspace: WorkspaceIdentity): string {
@@ -79,6 +94,17 @@ export function resolveToolPath(path: string | undefined, workspace: WorkspaceId
 export function validateWorkspacePath(path: string | undefined, workspace: WorkspaceIdentity): WorkspaceViolation | undefined {
   const resolved = resolveToolPath(path, workspace);
   if (isInsidePath(resolved, workspace.root)) return undefined;
+  return {
+    reason: `Blocked path outside workspace root: ${resolved}`,
+    path: resolved,
+    root: workspace.root,
+    cwd: workspace.cwd,
+  };
+}
+
+export function validateReadPath(path: string | undefined, workspace: WorkspaceIdentity): WorkspaceViolation | undefined {
+  const resolved = resolveToolPath(path, workspace);
+  if (isInsidePath(resolved, workspace.root) || isApprovedExternalReadPath(resolved)) return undefined;
   return {
     reason: `Blocked path outside workspace root: ${resolved}`,
     path: resolved,
@@ -150,7 +176,7 @@ export function createGuardedBuiltinToolDefinitions(
   toolOptions: ToolsOptions = {},
 ): ToolDefinition<any, any, any>[] {
   return [
-    guarded(createReadToolDefinition(workspace.cwd, toolOptions.read), workspace, params => validateWorkspacePath(params.path, workspace), agentId),
+    guarded(createReadToolDefinition(workspace.cwd, toolOptions.read), workspace, params => validateReadPath(params.path, workspace), agentId),
     guarded(createWriteToolDefinition(workspace.cwd, toolOptions.write), workspace, params => validateWorkspacePath(params.path, workspace), agentId),
     guarded(createEditToolDefinition(workspace.cwd, toolOptions.edit), workspace, params => validateWorkspacePath(params.path, workspace), agentId),
     guarded(createGrepToolDefinition(workspace.cwd, toolOptions.grep), workspace, params => validateWorkspacePath(params.path, workspace), agentId),
