@@ -218,17 +218,32 @@ describe("agent type registry", () => {
       expect(isValidType("general-purpose")).toBe(true);
     });
 
-    it("user agent overrides default with same name", () => {
+    it("project agent overrides default with same name", () => {
       const agents = new Map([["Explore", makeAgentConfig({
         name: "Explore",
         description: "Custom Explore",
         builtinToolNames: BUILTIN_TOOL_NAMES,
+        source: "project",
       })]]);
       registerAgents(agents);
 
       const config = getConfig("Explore");
       expect(config.description).toBe("Custom Explore");
       expect(config.builtinToolNames).toEqual(BUILTIN_TOOL_NAMES);
+    });
+
+    it("ignores stale global agents with embedded default names", () => {
+      const agents = new Map([["Explore", makeAgentConfig({
+        name: "Explore",
+        description: "Legacy Global Explore",
+        builtinToolNames: ["read"],
+        source: "global",
+      })]]);
+      registerAgents(agents);
+
+      const config = getConfig("Explore");
+      expect(config.description).toBe("Fast codebase exploration agent (read-only)");
+      expect(getAgentConfig("Explore")?.model).toBe("anthropic/claude-haiku-4-5-20251001");
     });
 
     it("disabled agent is excluded from available types", () => {

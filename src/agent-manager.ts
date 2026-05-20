@@ -167,6 +167,7 @@ export class AgentManager {
       worktreeCwd = wt.path;
     }
 
+    record.cwd = worktreeCwd ?? ctx.cwd;
     record.status = "running";
     record.startedAt = Date.now();
     if (options.isBackground) this.runningBackground++;

@@ -6,16 +6,36 @@ const {
   getAgentDir,
   sessionManagerInMemory,
   settingsManagerCreate,
+  createToolDefinition,
 } = vi.hoisted(() => ({
   createAgentSession: vi.fn(),
   defaultResourceLoaderCtor: vi.fn(),
   getAgentDir: vi.fn(() => "/mock/agent-dir"),
   sessionManagerInMemory: vi.fn(() => ({ kind: "memory-session-manager" })),
-  settingsManagerCreate: vi.fn(() => ({ kind: "settings-manager" })),
+  settingsManagerCreate: vi.fn(() => ({
+    kind: "settings-manager",
+    getImageAutoResize: vi.fn(() => true),
+    getShellCommandPrefix: vi.fn(() => undefined),
+    getShellPath: vi.fn(() => undefined),
+  })),
+  createToolDefinition: (name: string) => vi.fn(() => ({
+    name,
+    label: name,
+    description: name,
+    parameters: {} as any,
+    execute: vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] })),
+  })),
 }));
 
 vi.mock("@mariozechner/pi-coding-agent", () => ({
   createAgentSession,
+  createBashToolDefinition: createToolDefinition("bash"),
+  createEditToolDefinition: createToolDefinition("edit"),
+  createFindToolDefinition: createToolDefinition("find"),
+  createGrepToolDefinition: createToolDefinition("grep"),
+  createLsToolDefinition: createToolDefinition("ls"),
+  createReadToolDefinition: createToolDefinition("read"),
+  createWriteToolDefinition: createToolDefinition("write"),
   DefaultResourceLoader: class {
     constructor(options: any) {
       defaultResourceLoaderCtor(options);
@@ -147,7 +167,7 @@ describe("agent-runner final output capture", () => {
 
     await runAgent(ctx, "Explore", "Say CONFIGURED", { pi, cwd: "/tmp/worktree" });
 
-    expect(getAgentDir).toHaveBeenCalledTimes(1);
+    expect(getAgentDir).toHaveBeenCalled();
     expect(defaultResourceLoaderCtor).toHaveBeenCalledWith(expect.objectContaining({
       cwd: "/tmp/worktree",
       agentDir: "/mock/agent-dir",

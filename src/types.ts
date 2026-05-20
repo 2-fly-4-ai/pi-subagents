@@ -76,6 +76,8 @@ export interface AgentRecord {
   resultConsumed?: boolean;
   /** Steering messages queued before the session was ready. */
   pendingSteers?: string[];
+  /** Effective cwd the agent is running in. */
+  cwd?: string;
   /** Worktree info if the agent is running in an isolated worktree. */
   worktree?: { path: string; branch: string };
   /** Worktree cleanup result after agent completion. */

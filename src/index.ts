@@ -15,11 +15,13 @@ import { join } from "node:path";
 import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { appendAudit, excerpt } from "./audit-log.js";
 import { AgentManager } from "./agent-manager.js";
 import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, normalizeMaxTurns, setDefaultMaxTurns, setGraceTurns, steerAgent } from "./agent-runner.js";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getDefaultAgentNames, getUserAgentNames, registerAgents, resolveType } from "./agent-types.js";
 import { registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
+import { findPromptWorkspaceMismatch, resolveWorkspace } from "./cwd-guard.js";
 import { GroupJoinManager } from "./group-join.js";
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./invocation-config.js";
 import { type ModelRegistry, resolveModel } from "./model-resolver.js";
@@ -254,14 +256,14 @@ export default function (pi: ExtensionAPI) {
     }
   );
 
-  /** Reload agents from .pi/agents/*.md and merge with defaults (called on init and each Agent invocation). */
-  const reloadCustomAgents = () => {
-    const userAgents = loadCustomAgents(process.cwd());
+  /** Reload agents from .pi/agents/*.md and merge with defaults for the active session cwd. */
+  const reloadCustomAgents = (cwd: string) => {
+    const userAgents = loadCustomAgents(cwd);
     registerAgents(userAgents);
   };
 
-  // Initial load
-  reloadCustomAgents();
+  // Best-effort initial load for static tool descriptions; execution reloads from ctx.cwd.
+  reloadCustomAgents(process.cwd());
 
   // ---- Agent activity tracking + widget ----
   const agentActivity = new Map<string, AgentActivity>();
@@ -360,6 +362,7 @@ export default function (pi: ExtensionAPI) {
       id: record.id,
       type: record.type,
       description: record.description,
+      cwd: record.cwd,
       result: record.result,
       error: record.error,
       status: record.status,
@@ -374,6 +377,17 @@ export default function (pi: ExtensionAPI) {
     // Emit lifecycle event based on terminal status
     const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted";
     const eventData = buildEventData(record);
+    appendAudit(isError ? "subagent_failed" : "subagent_completed", {
+      id: record.id,
+      type: record.type,
+      description: record.description,
+      status: record.status,
+      cwd: record.cwd,
+      toolUses: record.toolUses,
+      durationMs: eventData.durationMs,
+      error: record.error,
+      resultExcerpt: excerpt(record.result),
+    });
     if (isError) {
       pi.events.emit("subagents:failed", eventData);
     } else {
@@ -382,7 +396,7 @@ export default function (pi: ExtensionAPI) {
 
     // Persist final record for cross-extension history reconstruction
     pi.appendEntry("subagents:record", {
-      id: record.id, type: record.type, description: record.description,
+      id: record.id, type: record.type, description: record.description, cwd: record.cwd,
       status: record.status, result: record.result, error: record.error,
       startedAt: record.startedAt, completedAt: record.completedAt,
     });
@@ -415,6 +429,7 @@ export default function (pi: ExtensionAPI) {
       id: record.id,
       type: record.type,
       description: record.description,
+      cwd: record.cwd,
     });
   }, (record, info) => {
     // Emit compacted event when agent's session compacts (preserves count on record).
@@ -466,6 +481,7 @@ export default function (pi: ExtensionAPI) {
   // Capture ctx from session_start for RPC spawn handler + start the scheduler.
   pi.on("session_start", async (_event, ctx) => {
     currentCtx = ctx;
+    reloadCustomAgents(ctx.cwd);
     manager.clearCompleted();
     if (isSchedulingEnabled() && !scheduler.isActive()) startScheduler(ctx);
   });
@@ -815,8 +831,8 @@ Guidelines:
       // Ensure we have UI context for widget rendering
       widget.setUICtx(ctx.ui as UICtx);
 
-      // Reload custom agents so new .pi/agents/*.md files are picked up without restart
-      reloadCustomAgents();
+      // Reload custom agents from the active session cwd so stale process cwd cannot leak agents across repos.
+      reloadCustomAgents(ctx.cwd);
 
       const rawType = params.subagent_type as SubagentType;
       const resolved = resolveType(rawType);
@@ -876,6 +892,38 @@ Guidelines:
         modelName,
         tags: agentTags.length > 0 ? agentTags : undefined,
       };
+
+      const parentWorkspace = await resolveWorkspace(pi, ctx.cwd);
+      const workspaceViolation = findPromptWorkspaceMismatch(String(params.prompt ?? ""), parentWorkspace);
+      if (workspaceViolation) {
+        appendAudit("subagent_spawn_blocked", {
+          toolCallId,
+          type: subagentType,
+          description: params.description,
+          cwd: parentWorkspace.cwd,
+          workspaceRoot: parentWorkspace.root,
+          reason: workspaceViolation.reason,
+          path: workspaceViolation.path,
+          promptExcerpt: excerpt(params.prompt),
+        });
+        return textResult(
+          `${workspaceViolation.reason}. Refusing to launch a subagent from ${parentWorkspace.root}. ` +
+          `Start a fresh Pi session in the target repository instead.`,
+        );
+      }
+
+      appendAudit("subagent_spawn_requested", {
+        toolCallId,
+        type: subagentType,
+        description: params.description,
+        cwd: parentWorkspace.cwd,
+        workspaceRoot: parentWorkspace.root,
+        runInBackground,
+        inheritContext,
+        isolated,
+        isolation,
+        promptExcerpt: excerpt(params.prompt),
+      });
 
       // ---- Schedule: register a job, don't spawn now ----
       if (params.schedule) {
@@ -1275,7 +1323,7 @@ Guidelines:
   }
 
   async function showAgentsMenu(ctx: ExtensionCommandContext) {
-    reloadCustomAgents();
+    reloadCustomAgents(ctx.cwd);
     const allNames = getAllTypes();
 
     // Build select options
@@ -1468,7 +1516,7 @@ Guidelines:
       if (edited !== undefined && edited !== content) {
         const { writeFileSync } = await import("node:fs");
         writeFileSync(file.path, edited, "utf-8");
-        reloadCustomAgents();
+        reloadCustomAgents(ctx.cwd);
         ctx.ui.notify(`Updated ${file.path}`, "info");
       }
     } else if (choice === "Delete") {
@@ -1476,7 +1524,7 @@ Guidelines:
         const confirmed = await ctx.ui.confirm("Delete agent", `Delete ${name} from ${file.location} (${file.path})?`);
         if (confirmed) {
           unlinkSync(file.path);
-          reloadCustomAgents();
+          reloadCustomAgents(ctx.cwd);
           ctx.ui.notify(`Deleted ${file.path}`, "info");
         }
       }
@@ -1484,7 +1532,7 @@ Guidelines:
       const confirmed = await ctx.ui.confirm("Reset to default", `Delete override ${file.path} and restore embedded default?`);
       if (confirmed) {
         unlinkSync(file.path);
-        reloadCustomAgents();
+        reloadCustomAgents(ctx.cwd);
         ctx.ui.notify(`Restored default ${name}`, "info");
       }
     } else if (choice.startsWith("Eject")) {
@@ -1537,7 +1585,7 @@ Guidelines:
 
     const { writeFileSync } = await import("node:fs");
     writeFileSync(targetPath, content, "utf-8");
-    reloadCustomAgents();
+    reloadCustomAgents(ctx.cwd);
     ctx.ui.notify(`Ejected ${name} to ${targetPath}`, "info");
   }
 
@@ -1554,7 +1602,7 @@ Guidelines:
       const updated = content.replace(/^---\n/, "---\nenabled: false\n");
       const { writeFileSync } = await import("node:fs");
       writeFileSync(file.path, updated, "utf-8");
-      reloadCustomAgents();
+      reloadCustomAgents(ctx.cwd);
       ctx.ui.notify(`Disabled ${name} (${file.path})`, "info");
       return;
     }
@@ -1572,7 +1620,7 @@ Guidelines:
     const targetPath = join(targetDir, `${name}.md`);
     const { writeFileSync } = await import("node:fs");
     writeFileSync(targetPath, "---\nenabled: false\n---\n", "utf-8");
-    reloadCustomAgents();
+    reloadCustomAgents(ctx.cwd);
     ctx.ui.notify(`Disabled ${name} (${targetPath})`, "info");
   }
 
@@ -1588,11 +1636,11 @@ Guidelines:
     // If the file was just a stub ("---\n---\n"), delete it to restore the built-in default
     if (updated.trim() === "---\n---" || updated.trim() === "---\n---\n") {
       unlinkSync(file.path);
-      reloadCustomAgents();
+      reloadCustomAgents(ctx.cwd);
       ctx.ui.notify(`Enabled ${name} (removed ${file.path})`, "info");
     } else {
       writeFileSync(file.path, updated, "utf-8");
-      reloadCustomAgents();
+      reloadCustomAgents(ctx.cwd);
       ctx.ui.notify(`Enabled ${name} (${file.path})`, "info");
     }
   }
@@ -1684,7 +1732,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
       return;
     }
 
-    reloadCustomAgents();
+    reloadCustomAgents(ctx.cwd);
 
     if (existsSync(targetPath)) {
       ctx.ui.notify(`Created ${targetPath}`, "info");
@@ -1777,7 +1825,7 @@ ${systemPrompt}
 
     const { writeFileSync } = await import("node:fs");
     writeFileSync(targetPath, content, "utf-8");
-    reloadCustomAgents();
+    reloadCustomAgents(ctx.cwd);
     ctx.ui.notify(`Created ${targetPath}`, "info");
   }
 

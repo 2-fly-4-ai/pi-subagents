@@ -27,8 +27,11 @@ export function registerAgents(userAgents: Map<string, AgentConfig>): void {
     agents.set(name, config);
   }
 
-  // Overlay user agents (overrides defaults with same name)
+  // Overlay user agents. Project-level agents may override defaults, but global
+  // files named like embedded defaults are ignored so stale ejected legacy agents
+  // in ~/.pi/agent/agents cannot shadow the maintained built-ins everywhere.
   for (const [name, config] of userAgents) {
+    if (config.source === "global" && DEFAULT_AGENTS.has(name)) continue;
     agents.set(name, config);
   }
 }

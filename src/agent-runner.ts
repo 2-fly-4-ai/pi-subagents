@@ -14,8 +14,10 @@ import {
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
+import { appendAudit, excerpt } from "./audit-log.js";
 import { getAgentConfig, getConfig, getMemoryToolNames, getReadOnlyMemoryToolNames, getToolNamesForType } from "./agent-types.js";
 import { buildParentContext, extractText } from "./context.js";
+import { createGuardedBuiltinToolDefinitions, resolveWorkspace } from "./cwd-guard.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
@@ -177,8 +179,20 @@ export async function runAgent(
 
   // Resolve working directory: worktree override > parent cwd
   const effectiveCwd = options.cwd ?? ctx.cwd;
+  const workspace = await resolveWorkspace(options.pi, effectiveCwd);
 
-  const env = await detectEnv(options.pi, effectiveCwd);
+  appendAudit("subagent_session_create", {
+    agentId: options.agentId,
+    type,
+    cwd: workspace.cwd,
+    workspaceRoot: workspace.root,
+    isGitRepo: workspace.isGitRepo,
+    promptExcerpt: excerpt(prompt),
+    inheritContext: options.inheritContext === true,
+    isolated: options.isolated === true,
+  });
+
+  const env = await detectEnv(options.pi, workspace.cwd);
 
   // Get parent system prompt for append-mode agents
   const parentSystemPrompt = ctx.getSystemPrompt();
@@ -192,7 +206,7 @@ export async function runAgent(
 
   // Skill preloading: when skills is string[], preload their content into prompt
   if (Array.isArray(skills)) {
-    const loaded = preloadSkills(skills, effectiveCwd);
+    const loaded = preloadSkills(skills, workspace.cwd);
     if (loaded.length > 0) {
       extras.skillBlocks = loaded;
     }
@@ -212,25 +226,25 @@ export async function runAgent(
       // Read-write memory: add any missing memory tool names (read/write/edit)
       const extraNames = getMemoryToolNames(existingNames);
       if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames];
-      extras.memoryBlock = buildMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd);
+      extras.memoryBlock = buildMemoryBlock(agentConfig.name, agentConfig.memory, workspace.cwd);
     } else {
       // Read-only memory: only add read tool name, use read-only prompt
       const extraNames = getReadOnlyMemoryToolNames(existingNames);
       if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames];
-      extras.memoryBlock = buildReadOnlyMemoryBlock(agentConfig.name, agentConfig.memory, effectiveCwd);
+      extras.memoryBlock = buildReadOnlyMemoryBlock(agentConfig.name, agentConfig.memory, workspace.cwd);
     }
   }
 
   // Build system prompt from agent config
   let systemPrompt: string;
   if (agentConfig) {
-    systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras);
+    systemPrompt = buildAgentPrompt(agentConfig, workspace.cwd, env, parentSystemPrompt, extras);
   } else {
     // Unknown type fallback: spread the canonical general-purpose config (defensive —
     // unreachable in practice since index.ts resolves unknown types before calling runAgent).
     const fallback = DEFAULT_AGENTS.get("general-purpose");
     if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`);
-    systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras);
+    systemPrompt = buildAgentPrompt({ ...fallback, name: type }, workspace.cwd, env, parentSystemPrompt, extras);
   }
 
   // When skills is string[], we've already preloaded them into the prompt.
@@ -238,6 +252,7 @@ export async function runAgent(
   const noSkills = skills === false || Array.isArray(skills);
 
   const agentDir = getAgentDir();
+  const settingsManager = SettingsManager.create(workspace.cwd, agentDir);
 
   // Load extensions/skills: true or string[] → load; false → don't.
   // Suppress AGENTS.md/CLAUDE.md and APPEND_SYSTEM.md — upstream's
@@ -246,7 +261,7 @@ export async function runAgent(
   // wanted, reaches the subagent via prompt_mode: append (parentSystemPrompt
   // is embedded in systemPromptOverride) or inherit_context (conversation).
   const loader = new DefaultResourceLoader({
-    cwd: effectiveCwd,
+    cwd: workspace.cwd,
     agentDir,
     noExtensions: extensions === false,
     noSkills,
@@ -267,13 +282,20 @@ export async function runAgent(
   const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking;
 
   const sessionOpts: Parameters<typeof createAgentSession>[0] = {
-    cwd: effectiveCwd,
+    cwd: workspace.cwd,
     agentDir,
-    sessionManager: SessionManager.inMemory(effectiveCwd),
-    settingsManager: SettingsManager.create(effectiveCwd, agentDir),
+    sessionManager: SessionManager.inMemory(workspace.cwd),
+    settingsManager,
     modelRegistry: ctx.modelRegistry,
     model,
     tools: toolNames,
+    customTools: createGuardedBuiltinToolDefinitions(workspace, options.agentId, {
+      read: { autoResizeImages: settingsManager.getImageAutoResize() },
+      bash: {
+        commandPrefix: settingsManager.getShellCommandPrefix(),
+        shellPath: settingsManager.getShellPath(),
+      },
+    }),
     resourceLoader: loader,
   };
   if (thinkingLevel) {
@@ -356,9 +378,27 @@ export async function runAgent(
       options.onTextDelta?.(event.assistantMessageEvent.delta, currentMessageText);
     }
     if (event.type === "tool_execution_start") {
+      appendAudit("subagent_tool_start", {
+        agentId: options.agentId,
+        type,
+        toolName: event.toolName,
+        toolCallId: (event as any).toolCallId,
+        args: (event as any).args,
+        cwd: workspace.cwd,
+        workspaceRoot: workspace.root,
+      });
       options.onToolActivity?.({ type: "start", toolName: event.toolName });
     }
     if (event.type === "tool_execution_end") {
+      appendAudit("subagent_tool_end", {
+        agentId: options.agentId,
+        type,
+        toolName: event.toolName,
+        toolCallId: (event as any).toolCallId,
+        isError: (event as any).isError,
+        cwd: workspace.cwd,
+        workspaceRoot: workspace.root,
+      });
       options.onToolActivity?.({ type: "end", toolName: event.toolName });
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
