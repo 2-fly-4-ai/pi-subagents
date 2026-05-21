@@ -78,6 +78,15 @@ describe("cwd guard", () => {
     expect(validateBashCommand("python3 -c \"url='https://hotmovs.com/embed/3822358'\"", workspace)).toBeUndefined();
   });
 
+  it("allows bash commands writing output to /dev/null", () => {
+    expect(validateBashCommand("curl -sS -D - -o /dev/null https://example.com", workspace)).toBeUndefined();
+    expect(validateBashCommand("command -v gh >/dev/null 2>&1", workspace)).toBeUndefined();
+  });
+
+  it("allows bash commands containing quoted slash-prefixed regex patterns", () => {
+    expect(validateBashCommand("awk '/^content-range/ {print}' headers.txt", workspace)).toBeUndefined();
+  });
+
   it("allows read-only access to skill files", () => {
     expect(validateReadPath("/Users/me/skill-repos/example/skills/diagnose/SKILL.md", workspace)).toBeUndefined();
   });

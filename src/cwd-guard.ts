@@ -85,6 +85,10 @@ function isApprovedExternalReadPath(path: string): boolean {
   return basename(resolved) === "SKILL.md" && resolved.split(/[\\/]+/).includes("skills");
 }
 
+function isApprovedExternalBashPath(path: string): boolean {
+  return realpathIfPossible(path) === "/dev/null";
+}
+
 export function resolveToolPath(path: string | undefined, workspace: WorkspaceIdentity): string {
   if (!path || path.trim() === "") return workspace.cwd;
   const expanded = expandPath(path);
@@ -131,7 +135,7 @@ export function findPromptWorkspaceMismatch(prompt: string, workspace: Workspace
 export function validateBashCommand(command: string, workspace: WorkspaceIdentity): WorkspaceViolation | undefined {
   for (const candidate of extractAbsolutePaths(command)) {
     const resolved = existsSync(candidate) ? realpathIfPossible(candidate) : normalize(candidate);
-    if (!isInsidePath(resolved, workspace.root)) {
+    if (!isInsidePath(resolved, workspace.root) && !isApprovedExternalBashPath(resolved)) {
       return {
         reason: `Blocked bash command path outside workspace root: ${resolved}`,
         path: resolved,
