@@ -51,9 +51,19 @@ describe("cwd guard", () => {
     expect(extractAbsolutePaths("const pats=[/api\\/videofile\\.php/g,/get_file\\/\\d+\\/[^\\s]+/g]")).toEqual([]);
   });
 
+  it("allows prompt references to root-relative URL paths", () => {
+    expect(findPromptWorkspaceMismatch("compare browser request lanes for /play and /vid paths", workspace)).toBeUndefined();
+    expect(findPromptWorkspaceMismatch("artifact evidence mentions /runtime-artifacts/ in route output", workspace)).toBeUndefined();
+  });
+
   it("blocks prompt references outside the active workspace", () => {
     const violation = findPromptWorkspaceMismatch("inspect /repo/lago/src/index.ts", workspace);
     expect(violation?.path).toBe("/repo/lago/src/index.ts");
+  });
+
+  it("blocks prompt references to system filesystem paths", () => {
+    const violation = findPromptWorkspaceMismatch("inspect /private/etc/hosts", workspace);
+    expect(violation?.path).toBe("/private/etc/hosts");
   });
 
   it("allows prompt references inside the active workspace", () => {
@@ -85,6 +95,13 @@ describe("cwd guard", () => {
 
   it("allows bash commands containing quoted slash-prefixed regex patterns", () => {
     expect(validateBashCommand("awk '/^content-range/ {print}' headers.txt", workspace)).toBeUndefined();
+    expect(validateBashCommand("grep -E '/supercachecdn|foo' page.html", workspace)).toBeUndefined();
+    expect(validateBashCommand("grep -o \"function/[0-9]/https://[^'\\\"]*\" player.js", workspace)).toBeUndefined();
+  });
+
+  it("still blocks bash commands writing to unapproved external temp files", () => {
+    const violation = validateBashCommand("curl -s -o /tmp/p2a_480.bin https://example.com", workspace);
+    expect(violation?.path).toBe("/tmp/p2a_480.bin");
   });
 
   it("allows read-only access to skill files", () => {

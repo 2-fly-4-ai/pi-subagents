@@ -78,6 +78,40 @@ function looksLikeRegexLiteral(path: string): boolean {
   return path.includes("\\") || /\/(?:[dgimsuy]+)?[,\])}]?$/.test(path);
 }
 
+const COMMON_FILESYSTEM_ROOTS = new Set([
+  "Applications",
+  "Library",
+  "System",
+  "Users",
+  "Volumes",
+  "bin",
+  "dev",
+  "etc",
+  "home",
+  "opt",
+  "private",
+  "root",
+  "sbin",
+  "tmp",
+  "usr",
+  "var",
+]);
+
+function firstPathSegment(path: string): string | undefined {
+  return path.split(/[\\/]+/).filter(Boolean)[0];
+}
+
+function isLikelyFilesystemAbsolutePath(path: string, workspace: WorkspaceIdentity): boolean {
+  if (!isAbsolute(path)) return false;
+  if (existsSync(path)) return true;
+
+  const firstSegment = firstPathSegment(path);
+  if (!firstSegment) return false;
+
+  const workspaceFirstSegment = firstPathSegment(workspace.root);
+  return COMMON_FILESYSTEM_ROOTS.has(firstSegment) || firstSegment === workspaceFirstSegment;
+}
+
 function isApprovedExternalReadPath(path: string): boolean {
   const resolved = realpathIfPossible(path);
   const skillRepoRoot = realpathIfPossible(resolve(homedir(), ".pi", "agent", "skill-repos"));
@@ -119,6 +153,8 @@ export function validateReadPath(path: string | undefined, workspace: WorkspaceI
 
 export function findPromptWorkspaceMismatch(prompt: string, workspace: WorkspaceIdentity): WorkspaceViolation | undefined {
   for (const candidate of extractAbsolutePaths(prompt)) {
+    if (!isLikelyFilesystemAbsolutePath(candidate, workspace)) continue;
+
     const resolved = existsSync(candidate) ? realpathIfPossible(candidate) : normalize(candidate);
     if (!isInsidePath(resolved, workspace.root)) {
       return {
@@ -134,6 +170,8 @@ export function findPromptWorkspaceMismatch(prompt: string, workspace: Workspace
 
 export function validateBashCommand(command: string, workspace: WorkspaceIdentity): WorkspaceViolation | undefined {
   for (const candidate of extractAbsolutePaths(command)) {
+    if (!isLikelyFilesystemAbsolutePath(candidate, workspace)) continue;
+
     const resolved = existsSync(candidate) ? realpathIfPossible(candidate) : normalize(candidate);
     if (!isInsidePath(resolved, workspace.root) && !isApprovedExternalBashPath(resolved)) {
       return {
