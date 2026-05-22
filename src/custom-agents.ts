@@ -59,6 +59,7 @@ function loadFromDir(dir: string, agents: Map<string, AgentConfig>, source: "pro
       extensions: inheritField(fm.extensions ?? fm.inherit_extensions),
       skills: inheritField(fm.skills ?? fm.inherit_skills),
       model: str(fm.model),
+      fallbackModels: csvListOptional(fm.fallback_models ?? fm.fallbackModels),
       thinking: str(fm.thinking) as ThinkingLevel | undefined,
       maxTurns: nonNegativeInt(fm.max_turns),
       systemPrompt: body.trim(),

@@ -43,6 +43,7 @@ describe("resolveAgentInvocationConfig", () => {
 
     expect(resolved.modelInput).toBe("provider/config-model");
     expect(resolved.modelFromParams).toBe(false);
+    expect(resolved.fallbackModelInputs).toEqual([]);
     expect(resolved.thinking).toBe("high");
     expect(resolved.maxTurns).toBe(42);
     expect(resolved.inheritContext).toBe(false);
@@ -64,12 +65,25 @@ describe("resolveAgentInvocationConfig", () => {
 
     expect(resolved.modelInput).toBe("provider/param-model");
     expect(resolved.modelFromParams).toBe(true);
+    expect(resolved.fallbackModelInputs).toEqual([]);
     expect(resolved.thinking).toBe("minimal");
     expect(resolved.maxTurns).toBe(3);
     expect(resolved.inheritContext).toBe(true);
     expect(resolved.runInBackground).toBe(true);
     expect(resolved.isolated).toBe(true);
     expect(resolved.isolation).toBe("worktree");
+  });
+
+  it("resolves fallback models from config before params", () => {
+    expect(resolveAgentInvocationConfig(
+      makeConfig({ fallbackModels: ["provider/config-fallback"] }),
+      { fallback_models: ["provider/param-fallback"] },
+    ).fallbackModelInputs).toEqual(["provider/config-fallback"]);
+
+    expect(resolveAgentInvocationConfig(
+      makeConfig({ fallbackModels: undefined }),
+      { fallback_models: ["provider/param-fallback"] },
+    ).fallbackModelInputs).toEqual(["provider/param-fallback"]);
   });
 
   it("lets parent fill in booleans when config leaves them undefined", () => {

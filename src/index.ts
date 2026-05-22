@@ -753,6 +753,11 @@ Guidelines:
             'Optional model override. Accepts "provider/modelId" or fuzzy name (e.g. "haiku", "sonnet"). Omit to use the agent type\'s default.',
         }),
       ),
+      fallback_models: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "Ordered fallback models to retry on retryable provider/model failures.",
+        }),
+      ),
       thinking: Type.Optional(
         Type.String({
           description: "Thinking level: off, minimal, low, medium, high, xhigh. Overrides agent default.",
@@ -915,6 +920,12 @@ Guidelines:
         }
       }
 
+      const fallbackModels: any[] = [];
+      for (const fallbackInput of resolvedConfig.fallbackModelInputs) {
+        const resolved = resolveModel(fallbackInput, ctx.modelRegistry);
+        if (typeof resolved !== "string") fallbackModels.push(resolved);
+      }
+
       const thinking = resolvedConfig.thinking;
       const inheritContext = resolvedConfig.inheritContext;
       const runInBackground = resolvedConfig.runInBackground;
@@ -1063,6 +1074,7 @@ Guidelines:
           id = manager.spawn(pi, ctx, subagentType, params.prompt, {
             description: params.description,
             model,
+            fallbackModels,
             maxTurns: effectiveMaxTurns,
             isolated,
             inheritContext,
@@ -1177,6 +1189,7 @@ Guidelines:
         record = await manager.spawnAndWait(pi, ctx, subagentType, params.prompt, {
           description: params.description,
           model,
+          fallbackModels,
           maxTurns: effectiveMaxTurns,
           isolated,
           inheritContext,

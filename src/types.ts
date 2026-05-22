@@ -33,6 +33,8 @@ export interface AgentConfig {
   /** true = inherit all, string[] = only listed, false = none */
   skills: true | string[] | false;
   model?: string;
+  /** Ordered fallback model strings retried on retryable provider/model failures. */
+  fallbackModels?: string[];
   thinking?: ThinkingLevel;
   maxTurns?: number;
   systemPrompt: string;
@@ -104,6 +106,8 @@ export interface AgentRecord {
   needsAttentionAt?: number;
   /** Long-running / needs-attention trigger reason. */
   needsAttentionReason?: "time_threshold" | "turn_threshold" | "token_threshold";
+  /** Ordered model attempts made for this record, including fallback retries. */
+  modelAttempts?: { model: string; success: boolean; error?: string }[];
   /** Resolved spawn params, captured for UI display. Fixed at spawn time. */
   invocation?: AgentInvocation;
 }

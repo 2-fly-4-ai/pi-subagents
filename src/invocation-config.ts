@@ -2,6 +2,7 @@ import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "./type
 
 interface AgentInvocationParams {
   model?: string;
+  fallback_models?: string[];
   thinking?: string;
   max_turns?: number;
   run_in_background?: boolean;
@@ -16,6 +17,7 @@ export function resolveAgentInvocationConfig(
 ): {
   modelInput?: string;
   modelFromParams: boolean;
+  fallbackModelInputs: string[];
   thinking?: ThinkingLevel;
   maxTurns?: number;
   inheritContext: boolean;
@@ -26,6 +28,7 @@ export function resolveAgentInvocationConfig(
   return {
     modelInput: agentConfig?.model ?? params.model,
     modelFromParams: agentConfig?.model == null && params.model != null,
+    fallbackModelInputs: agentConfig?.fallbackModels ?? params.fallback_models ?? [],
     thinking: (agentConfig?.thinking ?? params.thinking) as ThinkingLevel | undefined,
     maxTurns: agentConfig?.maxTurns ?? params.max_turns,
     inheritContext: agentConfig?.inheritContext ?? params.inherit_context ?? false,

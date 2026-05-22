@@ -17,6 +17,7 @@ import {
   type LongRunningNotice,
   nextLongRunningNotice,
 } from "./long-running-guard.js";
+import { errorMessage, isRetryableModelFailure, modelLabel } from "./model-fallback.js";
 import type { AgentInvocation, AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
 import { addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees, } from "./worktree.js";
@@ -47,6 +48,7 @@ interface SpawnArgs {
 interface SpawnOptions {
   description: string;
   model?: Model<any>;
+  fallbackModels?: readonly Model<any>[];
   maxTurns?: number;
   isolated?: boolean;
   inheritContext?: boolean;
@@ -124,6 +126,36 @@ export class AgentManager {
   private persist(record: AgentRecord): void {
     if (!record.isBackground) return;
     try { this.durableRunStore?.write(record); } catch { /* durable status is best-effort */ }
+  }
+
+  private async runAgentWithModelFallback(
+    ctx: ExtensionContext,
+    type: SubagentType,
+    prompt: string,
+    record: AgentRecord,
+    modelCandidates: readonly (Model<any> | undefined)[],
+    runOptions: (model: Model<any> | undefined) => Parameters<typeof runAgent>[3],
+  ) {
+    const candidates = modelCandidates.length > 0 ? modelCandidates : [undefined];
+    let lastError: unknown;
+    for (let i = 0; i < candidates.length; i++) {
+      const model = candidates[i];
+      const label = modelLabel(model);
+      try {
+        const result = await runAgent(ctx, type, prompt, runOptions(model));
+        record.modelAttempts = [...(record.modelAttempts ?? []), { model: label, success: true }];
+        this.persist(record);
+        return result;
+      } catch (err) {
+        lastError = err;
+        const message = errorMessage(err);
+        record.modelAttempts = [...(record.modelAttempts ?? []), { model: label, success: false, error: message }];
+        this.persist(record);
+        const canRetry = i < candidates.length - 1 && record.toolUses === 0 && record.session === undefined && isRetryableModelFailure(err);
+        if (!canRetry) throw err;
+      }
+    }
+    throw lastError;
   }
 
   private checkNeedsAttention(record: AgentRecord): void {
@@ -243,42 +275,42 @@ export class AgentManager {
     }
     const detach = () => { detachParentSignal?.(); detachParentSignal = undefined; };
 
-    const promise = runAgent(ctx, type, prompt, {
+    const runOptions = (model: Model<any> | undefined) => ({
       pi,
       agentId: id,
-      model: options.model,
+      model,
       maxTurns: options.maxTurns,
       isolated: options.isolated,
       inheritContext: options.inheritContext,
       thinkingLevel: options.thinkingLevel,
       cwd: worktreeCwd,
       signal: record.abortController!.signal,
-      onToolActivity: (activity) => {
+      onToolActivity: (activity: ToolActivity) => {
         if (activity.type === "end") {
           record.toolUses++;
           this.persist(record);
         }
         options.onToolActivity?.(activity);
       },
-      onTurnEnd: (turnCount) => {
+      onTurnEnd: (turnCount: number) => {
         record.turnCount = turnCount;
         this.persist(record);
         this.checkNeedsAttention(record);
         options.onTurnEnd?.(turnCount);
       },
       onTextDelta: options.onTextDelta,
-      onAssistantUsage: (usage) => {
+      onAssistantUsage: (usage: { input: number; output: number; cacheWrite: number }) => {
         addUsage(record.lifetimeUsage, usage);
         this.persist(record);
         this.checkNeedsAttention(record);
         options.onAssistantUsage?.(usage);
       },
-      onCompaction: (info) => {
+      onCompaction: (info: CompactionInfo) => {
         record.compactionCount++;
         this.onCompact?.(record, info);
         options.onCompaction?.(info);
       },
-      onSessionCreated: (session) => {
+      onSessionCreated: (session: AgentSession) => {
         record.session = session;
         // Flush any steers that arrived before the session was ready
         if (record.pendingSteers?.length) {
@@ -289,7 +321,10 @@ export class AgentManager {
         }
         options.onSessionCreated?.(session);
       },
-    })
+    });
+
+    const modelCandidates = [options.model, ...(options.fallbackModels ?? [])];
+    const promise = this.runAgentWithModelFallback(ctx, type, prompt, record, modelCandidates, runOptions)
       .then(({ responseText, session, aborted, steered }) => {
         // Don't overwrite status if externally stopped or paused via interrupt().
         if (record.status !== "stopped" && record.status !== "paused") {

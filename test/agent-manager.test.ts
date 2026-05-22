@@ -478,9 +478,11 @@ describe("AgentManager — durable background run status", () => {
       "background",
       "background",
       "background",
+      "background",
     ]);
     expect(store.writes.map((r) => r.status)).toEqual([
       "queued",
+      "running",
       "running",
       "running",
       "completed",
@@ -573,6 +575,56 @@ describe("AgentManager — durable background run status", () => {
     manager.abortAll();
   });
 
+
+
+  it("retries with fallback models for retryable model failures before a session starts", async () => {
+    vi.mocked(runAgent).mockReset();
+    const primary = { id: "primary", provider: "p", name: "Primary" } as any;
+    const fallback = { id: "fallback", provider: "p", name: "Fallback" } as any;
+    manager = new AgentManager();
+    vi.mocked(runAgent)
+      .mockRejectedValueOnce(new Error("429 rate limit"))
+      .mockResolvedValueOnce({ responseText: "done", session: mockSession(), aborted: false, steered: false });
+
+    const id = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
+      description: "background",
+      isBackground: true,
+      model: primary,
+      fallbackModels: [fallback],
+    });
+    await manager.getRecord(id)!.promise;
+
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runAgent).mock.calls[0][3].model).toBe(primary);
+    expect(vi.mocked(runAgent).mock.calls[1][3].model).toBe(fallback);
+    expect(manager.getRecord(id)!.modelAttempts).toEqual([
+      { model: "p/primary", success: false, error: "429 rate limit" },
+      { model: "p/fallback", success: true },
+    ]);
+    expect(manager.getRecord(id)!.status).toBe("completed");
+  });
+
+  it("does not retry non-model failures", async () => {
+    vi.mocked(runAgent).mockReset();
+    const primary = { id: "primary", provider: "p", name: "Primary" } as any;
+    const fallback = { id: "fallback", provider: "p", name: "Fallback" } as any;
+    manager = new AgentManager();
+    vi.mocked(runAgent).mockRejectedValueOnce(new Error("tool failed: grep path not found"));
+
+    const id = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
+      description: "background",
+      isBackground: true,
+      model: primary,
+      fallbackModels: [fallback],
+    });
+    await manager.getRecord(id)!.promise;
+
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(manager.getRecord(id)!.modelAttempts).toEqual([
+      { model: "p/primary", success: false, error: "tool failed: grep path not found" },
+    ]);
+    expect(manager.getRecord(id)!.status).toBe("error");
+  });
 
   it("interrupts a running background run into paused status without losing the session", () => {
     const store = fakeStore();
