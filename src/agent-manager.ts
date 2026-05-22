@@ -150,7 +150,7 @@ export class AgentManager {
     return options.isBackground === true && process.env.PI_SUBAGENTS_IN_PROCESS_BACKGROUND !== "1";
   }
 
-  private buildDetachedPiArgs(ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string[] {
+  private buildDetachedPiArgs(ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions, model = options.model): string[] {
     const agentConfig = getAgentConfig(type);
     const toolNames = getToolNamesForType(type)
       .filter((name) => !["Agent", "get_subagent_result", "steer_subagent", "control_subagent"].includes(name))
@@ -168,51 +168,60 @@ export class AgentManager {
       ? `${ctx.getSystemPrompt()}\n\n${agentConfig.systemPrompt}`
       : agentConfig?.systemPrompt;
     if (systemPrompt) args.push("--system-prompt", systemPrompt);
-    if (options.model && modelLabel(options.model) !== "parent-model") args.push("--model", modelLabel(options.model));
+    if (model && modelLabel(model) !== "parent-model") args.push("--model", modelLabel(model));
     if (options.thinkingLevel) args.push("--thinking", options.thinkingLevel);
-    const effectivePrompt = options.inheritContext && buildParentContext(ctx)
-      ? `${buildParentContext(ctx)}${prompt}`
-      : prompt;
+    const parentContext = options.inheritContext ? buildParentContext(ctx) : "";
+    const effectivePrompt = parentContext ? `${parentContext}${prompt}` : prompt;
     args.push(effectivePrompt);
     return args;
   }
 
   private startDetachedAgent(id: string, record: AgentRecord, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): void {
-    const handle = spawnDetachedRun({
-      id,
-      type,
-      description: options.description,
-      cwd: record.cwd ?? ctx.cwd,
-      runRoot: this.detachedRunRoot,
-      command: this.detachedCommand ?? "pi",
-      args: this.detachedArgsOverride ?? this.buildDetachedPiArgs(ctx, type, prompt, options),
-      childRunnerPath: this.detachedChildRunnerPath,
-    });
-    record.detachedRun = { pid: handle.pid, runDir: handle.paths.runDir };
-    this.persist(record);
-    const promise = handle.promise
-      .then((result) => {
-        if (record.status !== "stopped" && record.status !== "paused") {
-          record.status = result.state === "paused" ? "paused" : result.exitCode === 0 && !result.signal ? "completed" : "error";
-        }
-        record.result = result.resultText ?? result.output;
-        record.error = record.status === "error" ? result.error ?? `Detached run exited with ${result.exitCode ?? result.signal}` : undefined;
-        record.completedAt ??= Date.now();
+    const modelCandidates = [options.model, ...(options.fallbackModels ?? [])];
+    const runAttempt = async (attemptIndex: number): Promise<string> => {
+      const model = modelCandidates[attemptIndex];
+      const handle = spawnDetachedRun({
+        id,
+        type,
+        description: options.description,
+        cwd: record.cwd ?? ctx.cwd,
+        runRoot: this.detachedRunRoot,
+        command: this.detachedCommand ?? "pi",
+        args: this.detachedArgsOverride ?? this.buildDetachedPiArgs(ctx, type, prompt, options, model),
+        childRunnerPath: this.detachedChildRunnerPath,
+      });
+      record.detachedRun = { pid: handle.pid, runDir: handle.paths.runDir };
+      this.persist(record);
+      const result = await handle.promise;
+      const success = result.state === "paused" || (result.exitCode === 0 && !result.signal);
+      if (!success && attemptIndex < modelCandidates.length - 1 && isRetryableModelFailure(result.error ?? result.output)) {
+        record.modelAttempts = [...(record.modelAttempts ?? []), { model: modelLabel(model), success: false, error: result.error ?? result.output }];
         this.persist(record);
-        this.runningBackground--;
-        try { this.onComplete?.(record); } catch { /* ignore completion side-effect errors */ }
-        this.drainQueue();
-        return record.result ?? "";
-      })
+        return runAttempt(attemptIndex + 1);
+      }
+      record.modelAttempts = [...(record.modelAttempts ?? []), { model: modelLabel(model), success, ...(success ? {} : { error: result.error ?? result.output }) }];
+      if (record.status !== "stopped" && record.status !== "paused") {
+        record.status = result.state === "paused" ? "paused" : success ? "completed" : "error";
+      }
+      record.result = result.resultText ?? result.output;
+      record.error = record.status === "error" ? result.error ?? `Detached run exited with ${result.exitCode ?? result.signal}` : undefined;
+      record.completedAt ??= Date.now();
+      this.persist(record);
+      return record.result ?? "";
+    };
+
+    const promise = runAttempt(0)
       .catch((err) => {
         if (record.status !== "stopped" && record.status !== "paused") record.status = "error";
         record.error = err instanceof Error ? err.message : String(err);
         record.completedAt ??= Date.now();
         this.persist(record);
-        this.runningBackground--;
-        this.onComplete?.(record);
-        this.drainQueue();
         return "";
+      })
+      .finally(() => {
+        this.runningBackground--;
+        try { this.onComplete?.(record); } catch { /* ignore completion side-effect errors */ }
+        this.drainQueue();
       });
     record.promise = promise;
   }
