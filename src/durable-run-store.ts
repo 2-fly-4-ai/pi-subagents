@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { dirname, join } from "node:path";
 import type { AgentRecord } from "./types.js";
 
-export type DurableRunTerminalStatus = "completed" | "steered" | "aborted" | "stopped" | "error";
+export type DurableRunTerminalStatus = "paused" | "completed" | "steered" | "aborted" | "stopped" | "error";
 export type DurableRunActiveStatus = "queued" | "running";
 export type DurableRunStatusValue = DurableRunActiveStatus | DurableRunTerminalStatus;
 

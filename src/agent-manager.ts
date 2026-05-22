@@ -291,8 +291,8 @@ export class AgentManager {
       },
     })
       .then(({ responseText, session, aborted, steered }) => {
-        // Don't overwrite status if externally stopped via abort()
-        if (record.status !== "stopped") {
+        // Don't overwrite status if externally stopped or paused via interrupt().
+        if (record.status !== "stopped" && record.status !== "paused") {
           record.status = aborted ? "aborted" : steered ? "steered" : "completed";
         }
         record.result = responseText;
@@ -326,8 +326,8 @@ export class AgentManager {
         return responseText;
       })
       .catch((err) => {
-        // Don't overwrite status if externally stopped via abort()
-        if (record.status !== "stopped") {
+        // Don't overwrite status if externally stopped or paused via interrupt().
+        if (record.status !== "stopped" && record.status !== "paused") {
           record.status = "error";
         }
         record.error = err instanceof Error ? err.message : String(err);
@@ -476,6 +476,18 @@ export class AgentManager {
 
   getLastDurableRunReconciliation(): DurableRunReconciliationResult | undefined {
     return this.lastDurableRunReconciliation;
+  }
+
+  interrupt(id: string, message = "Interrupted. Waiting for explicit next action."): boolean {
+    const record = this.agents.get(id);
+    if (!record || record.status !== "running") return false;
+    record.session?.abort?.();
+    record.abortController?.abort();
+    record.status = "paused";
+    record.result = message;
+    record.completedAt = Date.now();
+    this.persist(record);
+    return true;
   }
 
   abort(id: string): boolean {

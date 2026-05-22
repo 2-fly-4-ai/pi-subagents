@@ -61,7 +61,7 @@ export interface AgentRecord {
   id: string;
   type: SubagentType;
   description: string;
-  status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error";
+  status: "queued" | "running" | "paused" | "completed" | "steered" | "aborted" | "stopped" | "error";
   /** True when this record represents a background run that should be visible across process restarts. */
   isBackground?: boolean;
   result?: string;

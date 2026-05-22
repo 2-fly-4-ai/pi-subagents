@@ -573,6 +573,31 @@ describe("AgentManager — durable background run status", () => {
     manager.abortAll();
   });
 
+
+  it("interrupts a running background run into paused status without losing the session", () => {
+    const store = fakeStore();
+    const abort = vi.fn();
+    manager = new AgentManager(undefined, undefined, undefined, undefined, { durableRunStore: store });
+    vi.mocked(runAgent).mockImplementation(async (_ctx, _type, _prompt, opts: any) => {
+      opts.onSessionCreated?.({ ...mockSession(), abort });
+      await new Promise(() => {});
+      throw new Error("unreachable");
+    });
+
+    const id = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
+      description: "background",
+      isBackground: true,
+    });
+
+    expect(manager.interrupt(id)).toBe(true);
+    expect(manager.getRecord(id)).toMatchObject({
+      status: "paused",
+      result: "Interrupted. Waiting for explicit next action.",
+    });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(store.writes.at(-1)).toMatchObject({ status: "paused" });
+  });
+
   it("persists stopped status when a queued background run is aborted", () => {
     const store = fakeStore();
     manager = new AgentManager(undefined, 1, undefined, undefined, { durableRunStore: store });

@@ -71,7 +71,7 @@ export interface AgentDetails {
   toolUses: number;
   tokens: string;
   durationMs: number;
-  status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error" | "background";
+  status: "queued" | "running" | "paused" | "completed" | "steered" | "aborted" | "stopped" | "error" | "background";
   /** Human-readable description of what the agent is currently doing. */
   activity?: string;
   /** Current spinner frame index (for animated running indicator). */
@@ -286,6 +286,9 @@ export class AgentWidget {
     } else if (a.status === "steered") {
       icon = theme.fg("warning", "✓");
       statusText = theme.fg("warning", " (turn limit)");
+    } else if (a.status === "paused") {
+      icon = theme.fg("warning", "Ⅱ");
+      statusText = theme.fg("warning", " paused");
     } else if (a.status === "stopped") {
       icon = theme.fg("dim", "■");
       statusText = theme.fg("dim", " stopped");

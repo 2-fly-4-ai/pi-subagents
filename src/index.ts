@@ -5,6 +5,7 @@
  *   Agent             — LLM-callable: spawn a sub-agent
  *   get_subagent_result  — LLM-callable: check background agent status/result
  *   steer_subagent       — LLM-callable: send a steering message to a running agent
+ *   control_subagent     — LLM-callable: inspect, interrupt/pause, or resume an agent
  *
  * Commands:
  *   /agents                 — Interactive agent management menu
@@ -115,6 +116,7 @@ function getStatusLabel(status: string, error?: string): string {
     case "error": return `Error: ${error ?? "unknown"}`;
     case "aborted": return "Aborted (max turns exceeded)";
     case "steered": return "Wrapped up (turn limit)";
+    case "paused": return "Paused";
     case "stopped": return "Stopped";
     default: return "Done";
   }
@@ -125,6 +127,7 @@ function getStatusNote(status: string): string {
   switch (status) {
     case "aborted": return " (aborted — max turns exceeded, output may be incomplete)";
     case "steered": return " (wrapped up — reached turn limit)";
+    case "paused": return " (paused — resume with Agent resume)";
     case "stopped": return " (stopped by user)";
     default: return "";
   }
@@ -504,6 +507,7 @@ export default function (pi: ExtensionAPI) {
     getDurableResult: (id: string) => manager.getDurableResult(id),
     listDurableRuns: () => manager.listDurableRuns(),
     scanLongRunningAgents: () => manager.scanLongRunningAgents(),
+    interrupt: (id: string, message?: string) => manager.interrupt(id, message),
   };
 
   // --- Cross-extension RPC via pi.events ---
@@ -728,6 +732,7 @@ Guidelines:
 - Use run_in_background for work you don't need immediately. You will be notified when it completes.
 - Use resume with an agent ID to continue a previous agent's work.
 - Use steer_subagent to send mid-run messages to a running background agent.
+- Use control_subagent to inspect, interrupt/pause, or resume a background agent.
 - Use model to specify a different model (as "provider/modelId", or fuzzy e.g. "haiku", "sonnet").
 - Use thinking to control extended thinking level.
 - Use inherit_context if the agent needs the parent conversation history.
@@ -1114,7 +1119,7 @@ Guidelines:
           (record?.outputFile ? `Output file: ${record.outputFile}\n` : "") +
           (isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : "") +
           `\nYou will be notified when this agent completes.\n` +
-          `Use get_subagent_result to retrieve full results, or steer_subagent to send it messages.\n` +
+          `Use get_subagent_result to retrieve full results, steer_subagent to send it messages, or control_subagent to interrupt/pause/resume it.\n` +
           `Do not duplicate this agent's work.`,
           { ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
         );
@@ -1344,7 +1349,7 @@ Guidelines:
         return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`);
       }
       if (record.status !== "running") {
-        return textResult(`Agent "${params.agent_id}" is not running (status: ${record.status}). Cannot steer a non-running agent.`);
+        return textResult(`Agent "${params.agent_id}" is not running (status: ${record.status}). Cannot steer a non-running agent. Use Agent with resume to continue paused agents.`);
       }
       if (!record.session) {
         // Session not ready yet — queue the steer for delivery once initialized
@@ -1371,6 +1376,74 @@ Guidelines:
       } catch (err) {
         return textResult(`Failed to steer agent: ${err instanceof Error ? err.message : String(err)}`);
       }
+    },
+  }));
+
+  // ---- control_subagent tool ----
+
+  pi.registerTool(defineTool({
+    name: "control_subagent",
+    label: "Control Agent",
+    description:
+      "Inspect, interrupt/pause, or resume a background agent. Interrupt preserves the live session when possible so it can be resumed with an explicit next action.",
+    parameters: Type.Object({
+      agent_id: Type.String({
+        description: "The agent ID to control.",
+      }),
+      action: Type.String({
+        description: "One of: status, interrupt, resume.",
+      }),
+      message: Type.Optional(Type.String({
+        description: "For interrupt: pause reason. For resume: the next prompt/action to send.",
+      })),
+    }),
+    execute: async (_toolCallId, params, signal) => {
+      const action = params.action.trim().toLowerCase();
+      const record = manager.getRecord(params.agent_id);
+
+      if (action === "status") {
+        if (record) {
+          return textResult(
+            `Agent: ${record.id}\n` +
+            `Status: ${record.status}\n` +
+            `Type: ${getDisplayName(record.type)}\n` +
+            `Description: ${record.description}\n` +
+            `Tool uses: ${record.toolUses}\n` +
+            `Turns: ${record.turnCount ?? 0}` +
+            (record.needsAttentionReason ? `\nNeeds attention: ${record.needsAttentionReason}` : "") +
+            (record.error ? `\nError: ${record.error}` : ""),
+          );
+        }
+        const durable = manager.getDurableRun(params.agent_id);
+        if (!durable) return textResult(`Agent not found: "${params.agent_id}".`);
+        return textResult(
+          `Agent: ${durable.id}\n` +
+          `Status: ${durable.status}\n` +
+          `Type: ${getDisplayName(durable.type)}\n` +
+          `Description: ${durable.description}\n` +
+          `Last-known durable status. Live controls are unavailable.` +
+          (durable.error ? `\nError: ${durable.error}` : ""),
+        );
+      }
+
+      if (action === "interrupt") {
+        const message = params.message?.trim() || undefined;
+        if (!manager.interrupt(params.agent_id, message)) {
+          const current = record?.status ?? manager.getDurableRun(params.agent_id)?.status ?? "not found";
+          return textResult(`Agent "${params.agent_id}" cannot be interrupted (status: ${current}).`);
+        }
+        pi.events.emit("subagents:interrupted", { id: params.agent_id, message });
+        return textResult(`Agent "${params.agent_id}" interrupted and paused. Resume it with control_subagent action: resume, or Agent resume.`);
+      }
+
+      if (action === "resume") {
+        if (!params.message?.trim()) return textResult("`message` is required when action is `resume`.");
+        const resumed = await manager.resume(params.agent_id, params.message, signal);
+        if (!resumed) return textResult(`Agent "${params.agent_id}" has no live session to resume.`);
+        return textResult(resumed.result?.trim() || resumed.error?.trim() || `Agent "${params.agent_id}" resumed with no output.`);
+      }
+
+      return textResult(`Unknown control action: ${params.action}. Use one of: status, interrupt, resume.`);
     },
   }));
 
