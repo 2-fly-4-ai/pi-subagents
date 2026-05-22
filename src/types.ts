@@ -108,6 +108,12 @@ export interface AgentRecord {
   needsAttentionReason?: "time_threshold" | "turn_threshold" | "token_threshold";
   /** Ordered model attempts made for this record, including fallback retries. */
   modelAttempts?: { model: string; success: boolean; error?: string }[];
+  /** True when the completion guard expected file/code mutation for this task. */
+  expectedMutation?: boolean;
+  /** True after a mutating tool call is observed. */
+  attemptedMutation?: boolean;
+  /** Warning emitted when implementation-like work completed without mutation attempts. */
+  completionGuardWarning?: string;
   /** Resolved spawn params, captured for UI display. Fixed at spawn time. */
   invocation?: AgentInvocation;
 }

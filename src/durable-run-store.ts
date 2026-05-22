@@ -25,6 +25,9 @@ export interface DurableRunStatus {
   needsAttentionAt?: number;
   needsAttentionReason?: "time_threshold" | "turn_threshold" | "token_threshold";
   modelAttempts?: { model: string; success: boolean; error?: string }[];
+  expectedMutation?: boolean;
+  attemptedMutation?: boolean;
+  completionGuardWarning?: string;
   stale?: boolean;
 }
 
@@ -108,6 +111,9 @@ export class DurableRunStore implements DurableRunStatusStore {
       needsAttentionAt: record.needsAttentionAt,
       needsAttentionReason: record.needsAttentionReason,
       modelAttempts: record.modelAttempts,
+      expectedMutation: record.expectedMutation,
+      attemptedMutation: record.attemptedMutation,
+      completionGuardWarning: record.completionGuardWarning,
     };
     this.writeStatus(status);
     return status;

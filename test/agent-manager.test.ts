@@ -577,6 +577,48 @@ describe("AgentManager — durable background run status", () => {
 
 
 
+
+  it("adds a completion-guard warning when implementation work completes without mutation attempts", async () => {
+    vi.mocked(runAgent).mockReset();
+    manager = new AgentManager();
+    vi.mocked(runAgent).mockResolvedValueOnce({ responseText: "reviewed only", session: mockSession(), aborted: false, steered: false });
+
+    const id = manager.spawn(mockPi, mockCtx, "worker", "fix the failing test", {
+      description: "background",
+      isBackground: true,
+    });
+    await manager.getRecord(id)!.promise;
+
+    expect(manager.getRecord(id)).toMatchObject({
+      expectedMutation: true,
+      attemptedMutation: false,
+      completionGuardWarning: expect.stringContaining("Completion guard"),
+    });
+    expect(manager.getRecord(id)!.result).toContain("Completion guard");
+  });
+
+  it("does not add a completion-guard warning after a mutation tool call", async () => {
+    vi.mocked(runAgent).mockReset();
+    manager = new AgentManager();
+    vi.mocked(runAgent).mockImplementationOnce(async (_ctx, _type, _prompt, opts: any) => {
+      opts.onToolActivity?.({ type: "start", toolName: "edit", args: { path: "file.ts" } });
+      return { responseText: "fixed", session: mockSession(), aborted: false, steered: false };
+    });
+
+    const id = manager.spawn(mockPi, mockCtx, "worker", "fix the failing test", {
+      description: "background",
+      isBackground: true,
+    });
+    await manager.getRecord(id)!.promise;
+
+    expect(manager.getRecord(id)).toMatchObject({
+      expectedMutation: true,
+      attemptedMutation: true,
+      completionGuardWarning: undefined,
+    });
+    expect(manager.getRecord(id)!.result).toBe("fixed");
+  });
+
   it("retries with fallback models for retryable model failures before a session starts", async () => {
     vi.mocked(runAgent).mockReset();
     const primary = { id: "primary", provider: "p", name: "Primary" } as any;

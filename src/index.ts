@@ -400,8 +400,18 @@ export default function (pi: ExtensionAPI) {
       toolUses: record.toolUses,
       durationMs: eventData.durationMs,
       error: record.error,
+      completionGuardWarning: record.completionGuardWarning,
       resultExcerpt: excerpt(record.result),
     });
+    if (record.completionGuardWarning) {
+      appendAudit("subagent_completion_guard", {
+        id: record.id,
+        type: record.type,
+        description: record.description,
+        warning: record.completionGuardWarning,
+      });
+      pi.events.emit("subagents:completion_guard", eventData);
+    }
     if (isError) {
       pi.events.emit("subagents:failed", eventData);
     } else {

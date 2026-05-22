@@ -85,6 +85,7 @@ function resolveDefaultModel(
 export interface ToolActivity {
   type: "start" | "end";
   toolName: string;
+  args?: Record<string, unknown>;
 }
 
 export interface RunOptions {
@@ -387,7 +388,7 @@ export async function runAgent(
         cwd: workspace.cwd,
         workspaceRoot: workspace.root,
       });
-      options.onToolActivity?.({ type: "start", toolName: event.toolName });
+      options.onToolActivity?.({ type: "start", toolName: event.toolName, args: (event as any).args });
     }
     if (event.type === "tool_execution_end") {
       appendAudit("subagent_tool_end", {

@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import type { Model } from "@mariozechner/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import { completionGuardWarning, expectsImplementationMutation, isMutatingTool } from "./completion-guard.js";
 import type { DurableRunReconciliationResult, DurableRunStatus, DurableRunStatusStore } from "./durable-run-store.js";
 import {
   DEFAULT_LONG_RUNNING_GUARD,
@@ -260,6 +261,8 @@ export class AgentManager {
     }
 
     record.cwd = worktreeCwd ?? ctx.cwd;
+    record.expectedMutation = expectsImplementationMutation(type, prompt);
+    record.attemptedMutation = false;
     record.status = "running";
     record.startedAt = Date.now();
     if (options.isBackground) this.runningBackground++;
@@ -286,6 +289,10 @@ export class AgentManager {
       cwd: worktreeCwd,
       signal: record.abortController!.signal,
       onToolActivity: (activity: ToolActivity) => {
+        if (activity.type === "start" && isMutatingTool(activity.toolName, activity.args)) {
+          record.attemptedMutation = true;
+          this.persist(record);
+        }
         if (activity.type === "end") {
           record.toolUses++;
           this.persist(record);
@@ -331,6 +338,10 @@ export class AgentManager {
           record.status = aborted ? "aborted" : steered ? "steered" : "completed";
         }
         record.result = responseText;
+        record.completionGuardWarning = completionGuardWarning(type, prompt, record.attemptedMutation === true);
+        if (record.completionGuardWarning) {
+          record.result = `${record.result ?? ""}\n\n${record.completionGuardWarning}`.trim();
+        }
         record.session = session;
         record.completedAt ??= Date.now();
 
