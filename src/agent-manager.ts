@@ -11,6 +11,12 @@ import type { Model } from "@mariozechner/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
 import type { DurableRunReconciliationResult, DurableRunStatus, DurableRunStatusStore } from "./durable-run-store.js";
+import {
+  DEFAULT_LONG_RUNNING_GUARD,
+  type LongRunningGuardConfig,
+  type LongRunningNotice,
+  nextLongRunningNotice,
+} from "./long-running-guard.js";
 import type { AgentInvocation, AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
 import { addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees, } from "./worktree.js";
@@ -23,6 +29,8 @@ export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; toke
 export interface AgentManagerOptions {
   durableRunStore?: DurableRunStatusStore;
   onDurableRunsReconciled?: (result: DurableRunReconciliationResult) => void;
+  longRunningGuard?: false | Partial<LongRunningGuardConfig>;
+  onNeedsAttention?: (record: AgentRecord, notice: LongRunningNotice) => void;
 }
 
 /** Default max concurrent background agents. */
@@ -79,6 +87,8 @@ export class AgentManager {
   private maxConcurrent: number;
   private durableRunStore?: DurableRunStatusStore;
   private lastDurableRunReconciliation?: DurableRunReconciliationResult;
+  private longRunningGuard?: LongRunningGuardConfig;
+  private onNeedsAttention?: (record: AgentRecord, notice: LongRunningNotice) => void;
 
   /** Queue of background agents waiting to start. */
   private queue: { id: string; args: SpawnArgs }[] = [];
@@ -97,6 +107,10 @@ export class AgentManager {
     this.onCompact = onCompact;
     this.maxConcurrent = maxConcurrent;
     this.durableRunStore = options.durableRunStore;
+    this.onNeedsAttention = options.onNeedsAttention;
+    this.longRunningGuard = options.longRunningGuard === false
+      ? undefined
+      : { ...DEFAULT_LONG_RUNNING_GUARD, ...options.longRunningGuard };
     try {
       const reconciliation = this.durableRunStore?.reconcileStaleRuns();
       this.lastDurableRunReconciliation = reconciliation;
@@ -110,6 +124,26 @@ export class AgentManager {
   private persist(record: AgentRecord): void {
     if (!record.isBackground) return;
     try { this.durableRunStore?.write(record); } catch { /* durable status is best-effort */ }
+  }
+
+  private checkNeedsAttention(record: AgentRecord): void {
+    if (!record.isBackground || !this.longRunningGuard) return;
+    const notice = nextLongRunningNotice(record, this.longRunningGuard);
+    if (!notice) return;
+    record.needsAttentionAt = Date.now();
+    record.needsAttentionReason = notice.reason;
+    this.persist(record);
+    try { this.onNeedsAttention?.(record, notice); } catch { /* notification is best-effort */ }
+  }
+
+  scanLongRunningAgents(): number {
+    let count = 0;
+    for (const record of this.agents.values()) {
+      const before = record.needsAttentionAt;
+      this.checkNeedsAttention(record);
+      if (before === undefined && record.needsAttentionAt !== undefined) count++;
+    }
+    return count;
   }
 
   /** Update the max concurrent background agents limit. */
@@ -226,10 +260,17 @@ export class AgentManager {
         }
         options.onToolActivity?.(activity);
       },
-      onTurnEnd: options.onTurnEnd,
+      onTurnEnd: (turnCount) => {
+        record.turnCount = turnCount;
+        this.persist(record);
+        this.checkNeedsAttention(record);
+        options.onTurnEnd?.(turnCount);
+      },
       onTextDelta: options.onTextDelta,
       onAssistantUsage: (usage) => {
         addUsage(record.lifetimeUsage, usage);
+        this.persist(record);
+        this.checkNeedsAttention(record);
         options.onAssistantUsage?.(usage);
       },
       onCompaction: (info) => {
@@ -373,6 +414,8 @@ export class AgentManager {
     record.completedAt = undefined;
     record.result = undefined;
     record.error = undefined;
+    record.needsAttentionAt = undefined;
+    record.needsAttentionReason = undefined;
     this.persist(record);
 
     try {
@@ -382,6 +425,8 @@ export class AgentManager {
         },
         onAssistantUsage: (usage) => {
           addUsage(record.lifetimeUsage, usage);
+          this.persist(record);
+          this.checkNeedsAttention(record);
         },
         onCompaction: (info) => {
           record.compactionCount++;

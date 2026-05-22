@@ -521,6 +521,53 @@ describe("AgentManager — durable background run status", () => {
     expect(manager.getDurableRun("missing")).toBeUndefined();
   });
 
+
+  it("emits a needs-attention notice once when a background run crosses a threshold", async () => {
+    const store = fakeStore();
+    const notices: any[] = [];
+    manager = new AgentManager(undefined, undefined, undefined, undefined, {
+      durableRunStore: store,
+      longRunningGuard: { activeNoticeAfterMs: 60_000, activeNoticeAfterTurns: 1 },
+      onNeedsAttention: (record, notice) => notices.push({ id: record.id, reason: notice.reason, turns: notice.metrics.turns }),
+    });
+
+    vi.mocked(runAgent).mockImplementation(async (_ctx, _type, _prompt, opts: any) => {
+      opts.onTurnEnd?.(1);
+      opts.onTurnEnd?.(2);
+      return { responseText: "done", session: mockSession(), aborted: false, steered: false };
+    });
+
+    const id = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
+      description: "background",
+      isBackground: true,
+    });
+    await manager.getRecord(id)!.promise;
+
+    expect(notices).toEqual([{ id, reason: "turn_threshold", turns: 1 }]);
+    expect(store.writes.some((r) => r.needsAttentionReason === "turn_threshold")).toBe(true);
+  });
+
+  it("scanLongRunningAgents marks old running background records", () => {
+    const notices: any[] = [];
+    manager = new AgentManager(undefined, undefined, undefined, undefined, {
+      longRunningGuard: { activeNoticeAfterMs: 1 },
+      onNeedsAttention: (record, notice) => notices.push({ id: record.id, reason: notice.reason }),
+    });
+    vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}));
+
+    const id = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
+      description: "background",
+      isBackground: true,
+    });
+    manager.getRecord(id)!.startedAt = Date.now() - 10_000;
+
+    expect(manager.scanLongRunningAgents()).toBe(1);
+    expect(manager.scanLongRunningAgents()).toBe(0);
+    expect(notices).toEqual([{ id, reason: "time_threshold" }]);
+
+    manager.abortAll();
+  });
+
   it("persists stopped status when a queued background run is aborted", () => {
     const store = fakeStore();
     manager = new AgentManager(undefined, 1, undefined, undefined, { durableRunStore: store });

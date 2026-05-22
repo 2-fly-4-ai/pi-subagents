@@ -98,6 +98,12 @@ export interface AgentRecord {
   lifetimeUsage: LifetimeUsage;
   /** Number of times this agent's session has compacted. Initialized to 0 at spawn. */
   compactionCount: number;
+  /** Cumulative agentic turns observed for the current run. */
+  turnCount?: number;
+  /** Timestamp when this run first crossed a long-running / needs-attention threshold. */
+  needsAttentionAt?: number;
+  /** Long-running / needs-attention trigger reason. */
+  needsAttentionReason?: "time_threshold" | "turn_threshold" | "token_threshold";
   /** Resolved spawn params, captured for UI display. Fixed at spawn time. */
   invocation?: AgentInvocation;
 }

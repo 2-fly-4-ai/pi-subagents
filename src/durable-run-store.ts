@@ -20,6 +20,9 @@ export interface DurableRunStatus {
   toolUses: number;
   resultPreview?: string;
   error?: string;
+  turnCount?: number;
+  needsAttentionAt?: number;
+  needsAttentionReason?: "time_threshold" | "turn_threshold" | "token_threshold";
   stale?: boolean;
 }
 
@@ -92,6 +95,9 @@ export class DurableRunStore implements DurableRunStatusStore {
       toolUses: record.toolUses,
       resultPreview: preview(record.result),
       error: record.error,
+      turnCount: record.turnCount,
+      needsAttentionAt: record.needsAttentionAt,
+      needsAttentionReason: record.needsAttentionReason,
     };
     this.writeStatus(status);
     return status;

@@ -453,6 +453,26 @@ export default function (pi: ExtensionAPI) {
     });
   }, {
     durableRunStore,
+    onNeedsAttention: (record, notice) => {
+      appendAudit("subagent_needs_attention", {
+        id: record.id,
+        type: record.type,
+        description: record.description,
+        cwd: record.cwd,
+        reason: notice.reason,
+        elapsedMs: notice.metrics.elapsedMs,
+        turns: notice.metrics.turns,
+        tokens: notice.metrics.tokens,
+      });
+      pi.events.emit("subagents:needs_attention", {
+        id: record.id,
+        type: record.type,
+        description: record.description,
+        cwd: record.cwd,
+        reason: notice.reason,
+        metrics: notice.metrics,
+      });
+    },
     onDurableRunsReconciled: (result) => {
       for (const status of result.reconciled) {
         appendAudit("subagent_stale_reconciled", {
@@ -482,6 +502,7 @@ export default function (pi: ExtensionAPI) {
     getRecord: (id: string) => manager.getRecord(id),
     getDurableRun: (id: string) => manager.getDurableRun(id),
     listDurableRuns: () => manager.listDurableRuns(),
+    scanLongRunningAgents: () => manager.scanLongRunningAgents(),
   };
 
   // --- Cross-extension RPC via pi.events ---
