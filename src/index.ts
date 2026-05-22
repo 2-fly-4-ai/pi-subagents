@@ -23,6 +23,7 @@ import { appendAudit, excerpt } from "./audit-log.js";
 import { registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
 import { findPromptWorkspaceMismatch, resolveWorkspace } from "./cwd-guard.js";
+import { buildDoctorReport } from "./doctor.js";
 import { DurableRunStore } from "./durable-run-store.js";
 import { GroupJoinManager } from "./group-join.js";
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./invocation-config.js";
@@ -2101,5 +2102,18 @@ ${systemPrompt}
   pi.registerCommand("agents", {
     description: "Manage agents",
     handler: async (_args, ctx) => { await showAgentsMenu(ctx); },
+  });
+
+  pi.registerCommand("subagents-doctor", {
+    description: "Diagnose subagents runtime, custom agents, durable runs, and models",
+    handler: async (_args, ctx) => {
+      const modelCount = ctx.modelRegistry.getAvailable?.().length ?? ctx.modelRegistry.getAll().length;
+      ctx.ui.notify(buildDoctorReport({
+        cwd: ctx.cwd,
+        durableRuns: manager.listDurableRuns(),
+        modelCount,
+        packageRoot: process.cwd(),
+      }), "info");
+    },
   });
 }
