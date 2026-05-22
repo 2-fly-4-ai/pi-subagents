@@ -15,13 +15,14 @@ import { join } from "node:path";
 import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { appendAudit, excerpt } from "./audit-log.js";
 import { AgentManager } from "./agent-manager.js";
 import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, normalizeMaxTurns, setDefaultMaxTurns, setGraceTurns, steerAgent } from "./agent-runner.js";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getDefaultAgentNames, getUserAgentNames, registerAgents, resolveType } from "./agent-types.js";
+import { appendAudit, excerpt } from "./audit-log.js";
 import { registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
 import { findPromptWorkspaceMismatch, resolveWorkspace } from "./cwd-guard.js";
+import { DurableRunStore } from "./durable-run-store.js";
 import { GroupJoinManager } from "./group-join.js";
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./invocation-config.js";
 import { type ModelRegistry, resolveModel } from "./model-resolver.js";
@@ -372,6 +373,15 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
+  const durableRunStore = (() => {
+    try {
+      return new DurableRunStore(join(getAgentDir(), "subagents", "runs"));
+    } catch (err) {
+      console.warn("[pi-subagents] Failed to initialize durable run store:", err);
+      return undefined;
+    }
+  })();
+
   // Background completion: route through group join or send individual nudge
   const manager = new AgentManager((record) => {
     // Emit lifecycle event based on terminal status
@@ -441,7 +451,7 @@ export default function (pi: ExtensionAPI) {
       tokensBefore: info.tokensBefore,
       compactionCount: record.compactionCount,
     });
-  });
+  }, { durableRunStore });
 
   // Expose manager via Symbol.for() global registry for cross-package access.
   // Standard Node.js pattern for cross-package singletons (used by OpenTelemetry, etc.).

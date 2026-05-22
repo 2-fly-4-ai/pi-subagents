@@ -382,3 +382,98 @@ describe("AgentManager — isolation: worktree fails loud, no silent fallback", 
     expect(runAgent).not.toHaveBeenCalled();
   });
 });
+
+describe("AgentManager — durable background run status", () => {
+  let manager: AgentManager;
+
+  afterEach(() => {
+    manager?.dispose();
+  });
+
+  function fakeStore() {
+    return {
+      writes: [] as AgentRecord[],
+      reconciled: false,
+      write(record: AgentRecord) {
+        this.writes.push({ ...record });
+        return {
+          version: 1 as const,
+          id: record.id,
+          type: record.type,
+          description: record.description,
+          status: record.status,
+          ownerPid: 1,
+          startedAt: record.startedAt,
+          updatedAt: Date.now(),
+          toolUses: record.toolUses,
+        };
+      },
+      reconcileStaleRuns() {
+        this.reconciled = true;
+        return { reconciled: [], active: [] };
+      },
+    };
+  }
+
+  it("reconciles durable statuses when constructed", () => {
+    const store = fakeStore();
+
+    manager = new AgentManager(undefined, undefined, undefined, undefined, { durableRunStore: store });
+
+    expect(store.reconciled).toBe(true);
+  });
+
+  it("persists background status transitions but not foreground runs", async () => {
+    const store = fakeStore();
+    manager = new AgentManager(undefined, undefined, undefined, undefined, { durableRunStore: store });
+
+    vi.mocked(runAgent).mockImplementation(async (_ctx, _type, _prompt, opts: any) => {
+      opts.onToolActivity?.({ type: "end", toolName: "read" });
+      return { responseText: "done", session: mockSession(), aborted: false, steered: false };
+    });
+
+    const backgroundId = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
+      description: "background",
+      isBackground: true,
+    });
+    await manager.getRecord(backgroundId)!.promise;
+
+    await manager.spawnAndWait(mockPi, mockCtx, "general-purpose", "test", {
+      description: "foreground",
+    });
+
+    expect(store.writes.map((r) => r.description)).toEqual([
+      "background",
+      "background",
+      "background",
+      "background",
+    ]);
+    expect(store.writes.map((r) => r.status)).toEqual([
+      "queued",
+      "running",
+      "running",
+      "completed",
+    ]);
+    expect(store.writes.at(-1)).toMatchObject({ result: "done", toolUses: 1 });
+  });
+
+  it("persists stopped status when a queued background run is aborted", () => {
+    const store = fakeStore();
+    manager = new AgentManager(undefined, 1, undefined, undefined, { durableRunStore: store });
+    vi.mocked(runAgent).mockImplementation(() => new Promise(() => {}));
+
+    manager.spawn(mockPi, mockCtx, "general-purpose", "test1", {
+      description: "running",
+      isBackground: true,
+    });
+    const queuedId = manager.spawn(mockPi, mockCtx, "general-purpose", "test2", {
+      description: "queued",
+      isBackground: true,
+    });
+
+    expect(manager.abort(queuedId)).toBe(true);
+
+    expect(store.writes.at(-1)).toMatchObject({ description: "queued", status: "stopped" });
+    manager.abortAll();
+  });
+});

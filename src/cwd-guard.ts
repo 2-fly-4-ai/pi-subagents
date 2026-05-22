@@ -187,7 +187,7 @@ export function validateBashCommand(command: string, workspace: WorkspaceIdentit
 
 function guarded<T extends ToolDefinition<any, any, any>>(
   tool: T,
-  workspace: WorkspaceIdentity,
+  _workspace: WorkspaceIdentity,
   validate: (params: any) => WorkspaceViolation | undefined,
   agentId?: string,
 ): T {

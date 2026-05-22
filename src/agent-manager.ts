@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import type { Model } from "@mariozechner/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import type { DurableRunStatusStore } from "./durable-run-store.js";
 import type { AgentInvocation, AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
 import { addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees, } from "./worktree.js";
@@ -18,6 +19,10 @@ export type OnAgentComplete = (record: AgentRecord) => void;
 export type OnAgentStart = (record: AgentRecord) => void;
 export type OnAgentCompact = (record: AgentRecord, info: CompactionInfo) => void;
 export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; tokensBefore: number };
+
+export interface AgentManagerOptions {
+  durableRunStore?: DurableRunStatusStore;
+}
 
 /** Default max concurrent background agents. */
 const DEFAULT_MAX_CONCURRENT = 4;
@@ -71,6 +76,7 @@ export class AgentManager {
   private onStart?: OnAgentStart;
   private onCompact?: OnAgentCompact;
   private maxConcurrent: number;
+  private durableRunStore?: DurableRunStatusStore;
 
   /** Queue of background agents waiting to start. */
   private queue: { id: string; args: SpawnArgs }[] = [];
@@ -82,14 +88,22 @@ export class AgentManager {
     maxConcurrent = DEFAULT_MAX_CONCURRENT,
     onStart?: OnAgentStart,
     onCompact?: OnAgentCompact,
+    options: AgentManagerOptions = {},
   ) {
     this.onComplete = onComplete;
     this.onStart = onStart;
     this.onCompact = onCompact;
     this.maxConcurrent = maxConcurrent;
+    this.durableRunStore = options.durableRunStore;
+    try { this.durableRunStore?.reconcileStaleRuns(); } catch { /* durable status is best-effort */ }
     // Cleanup completed agents after 10 minutes (but keep sessions for resume)
     this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
     this.cleanupInterval.unref();
+  }
+
+  private persist(record: AgentRecord): void {
+    if (!record.isBackground) return;
+    try { this.durableRunStore?.write(record); } catch { /* durable status is best-effort */ }
   }
 
   /** Update the max concurrent background agents limit. */
@@ -121,6 +135,7 @@ export class AgentManager {
       type,
       description: options.description,
       status: options.isBackground ? "queued" : "running",
+      isBackground: options.isBackground === true,
       toolUses: 0,
       startedAt: Date.now(),
       abortController,
@@ -129,6 +144,7 @@ export class AgentManager {
       invocation: options.invocation,
     };
     this.agents.set(id, record);
+    this.persist(record);
 
     const args: SpawnArgs = { pi, ctx, type, prompt, options };
 
@@ -143,6 +159,10 @@ export class AgentManager {
     try {
       this.startAgent(id, record, args);
     } catch (err) {
+      record.status = "error";
+      record.error = err instanceof Error ? err.message : String(err);
+      record.completedAt = Date.now();
+      this.persist(record);
       this.agents.delete(id);
       throw err;
     }
@@ -171,6 +191,7 @@ export class AgentManager {
     record.status = "running";
     record.startedAt = Date.now();
     if (options.isBackground) this.runningBackground++;
+    this.persist(record);
     this.onStart?.(record);
 
     // Wire parent abort signal to stop the subagent when the parent is interrupted
@@ -193,7 +214,10 @@ export class AgentManager {
       cwd: worktreeCwd,
       signal: record.abortController!.signal,
       onToolActivity: (activity) => {
-        if (activity.type === "end") record.toolUses++;
+        if (activity.type === "end") {
+          record.toolUses++;
+          this.persist(record);
+        }
         options.onToolActivity?.(activity);
       },
       onTurnEnd: options.onTurnEnd,
@@ -245,6 +269,7 @@ export class AgentManager {
               `\n\n---\nChanges saved to branch \`${wtResult.branch}\`. Merge with: \`git merge ${wtResult.branch}\``;
           }
         }
+        this.persist(record);
 
         if (options.isBackground) {
           this.runningBackground--;
@@ -276,6 +301,7 @@ export class AgentManager {
             record.worktreeResult = wtResult;
           } catch { /* ignore cleanup errors */ }
         }
+        this.persist(record);
 
         if (options.isBackground) {
           this.runningBackground--;
@@ -302,6 +328,7 @@ export class AgentManager {
         record.status = "error";
         record.error = err instanceof Error ? err.message : String(err);
         record.completedAt = Date.now();
+        this.persist(record);
         this.onComplete?.(record);
       }
     }
@@ -340,6 +367,7 @@ export class AgentManager {
     record.completedAt = undefined;
     record.result = undefined;
     record.error = undefined;
+    this.persist(record);
 
     try {
       const responseText = await resumeAgent(record.session, prompt, {
@@ -358,10 +386,12 @@ export class AgentManager {
       record.status = "completed";
       record.result = responseText;
       record.completedAt = Date.now();
+      this.persist(record);
     } catch (err) {
       record.status = "error";
       record.error = err instanceof Error ? err.message : String(err);
       record.completedAt = Date.now();
+      this.persist(record);
     }
 
     return record;
@@ -386,6 +416,7 @@ export class AgentManager {
       this.queue = this.queue.filter(q => q.id !== id);
       record.status = "stopped";
       record.completedAt = Date.now();
+      this.persist(record);
       return true;
     }
 
@@ -393,6 +424,7 @@ export class AgentManager {
     record.abortController?.abort();
     record.status = "stopped";
     record.completedAt = Date.now();
+    this.persist(record);
     return true;
   }
 
@@ -439,6 +471,7 @@ export class AgentManager {
       if (record) {
         record.status = "stopped";
         record.completedAt = Date.now();
+        this.persist(record);
         count++;
       }
     }
@@ -449,6 +482,7 @@ export class AgentManager {
         record.abortController?.abort();
         record.status = "stopped";
         record.completedAt = Date.now();
+        this.persist(record);
         count++;
       }
     }

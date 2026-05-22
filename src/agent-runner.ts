@@ -14,8 +14,8 @@ import {
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
-import { appendAudit, excerpt } from "./audit-log.js";
 import { getAgentConfig, getConfig, getMemoryToolNames, getReadOnlyMemoryToolNames, getToolNamesForType } from "./agent-types.js";
+import { appendAudit, excerpt } from "./audit-log.js";
 import { buildParentContext, extractText } from "./context.js";
 import { createGuardedBuiltinToolDefinitions, resolveWorkspace } from "./cwd-guard.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
