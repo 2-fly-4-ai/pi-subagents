@@ -59,6 +59,8 @@ Agent({
 
 Foreground agents block until complete and return results inline. Background agents return an ID immediately and notify you on completion.
 
+By default, background agents run through the detached runner. Each run writes durable artifacts under `~/.pi/agent/subagents/runs/<agent-id>/` (`status.json`, `events.jsonl`, `stdout.jsonl`, `stderr.log`, `result.md`, `result.json`) so results can be inspected after parent UI restarts. Set `PI_SUBAGENTS_IN_PROCESS_BACKGROUND=1` as an emergency fallback to the older in-process background runner.
+
 ### Scheduling
 
 Add a `schedule` field to register the agent to fire later instead of running now:
