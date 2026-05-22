@@ -80,8 +80,21 @@ describe("DurableRunStore", () => {
       id: "agent/one",
       status: "completed",
       resultPreview: "done",
+      resultPath: join(root, "agent_one", "result.md"),
     });
     expect(store.get("missing")).toBeUndefined();
+  });
+
+  it("stores and reads full terminal result artifacts", () => {
+    const root = tempRoot();
+    const store = new DurableRunStore(root, { ownerPid: 123, now: () => 456 });
+    const result = "line\n".repeat(1_000);
+
+    store.write(record({ id: "agent/one", status: "completed", result }));
+
+    expect(store.get("agent/one")?.resultPreview).toHaveLength(2_001);
+    expect(store.readResult("agent/one")).toBe(result);
+    expect(store.readResult("missing")).toBeUndefined();
   });
 
   it("marks stale queued and running records owned by dead processes as error", () => {

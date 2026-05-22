@@ -31,6 +31,7 @@ export interface SpawnCapable {
   abort(id: string): boolean;
   getRecord?(id: string): unknown;
   getDurableRun?(id: string): unknown;
+  getDurableResult?(id: string): unknown;
   listDurableRuns?(): unknown[];
 }
 
@@ -127,8 +128,9 @@ export function registerRpcHandlers(deps: RpcDeps): RpcHandle {
     events, "subagents:rpc:status", ({ agentId }) => {
       const live = manager.getRecord?.(agentId);
       const durable = manager.getDurableRun?.(agentId);
+      const durableResult = manager.getDurableResult?.(agentId);
       if (!live && !durable) throw new Error("Agent not found");
-      return { live, durable };
+      return { live, durable, durableResult };
     },
   );
 

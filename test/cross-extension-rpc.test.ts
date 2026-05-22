@@ -29,6 +29,7 @@ describe("cross-extension RPC", () => {
       abort: vi.fn().mockReturnValue(true),
       getRecord: vi.fn(),
       getDurableRun: vi.fn(),
+      getDurableResult: vi.fn(),
       listDurableRuns: vi.fn().mockReturnValue([]),
     };
     ctx = { session: true };
@@ -222,13 +223,14 @@ describe("cross-extension RPC", () => {
       const durable = { id: "agent-42", status: "running", ownerPid: 1 };
       (manager.getRecord as ReturnType<typeof vi.fn>).mockReturnValue(live);
       (manager.getDurableRun as ReturnType<typeof vi.fn>).mockReturnValue(durable);
+      (manager.getDurableResult as ReturnType<typeof vi.fn>).mockReturnValue("full result");
       registerRpcHandlers(deps);
       const reply = vi.fn();
       events.on("subagents:rpc:status:reply:req-status", reply);
       events.emit("subagents:rpc:status", { requestId: "req-status", agentId: "agent-42" });
 
       await vi.waitFor(() => expect(reply).toHaveBeenCalled());
-      expect(reply).toHaveBeenCalledWith({ success: true, data: { live, durable } });
+      expect(reply).toHaveBeenCalledWith({ success: true, data: { live, durable, durableResult: "full result" } });
     });
 
     it("returns durable-only status for stale agents", async () => {
@@ -241,7 +243,7 @@ describe("cross-extension RPC", () => {
       events.emit("subagents:rpc:status", { requestId: "req-stale", agentId: "agent-stale" });
 
       await vi.waitFor(() => expect(reply).toHaveBeenCalled());
-      expect(reply).toHaveBeenCalledWith({ success: true, data: { live: undefined, durable } });
+      expect(reply).toHaveBeenCalledWith({ success: true, data: { live: undefined, durable, durableResult: undefined } });
     });
 
     it("returns error for unknown status requests", async () => {

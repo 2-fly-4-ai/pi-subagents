@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AgentRecord } from "./types.js";
 
@@ -19,6 +19,7 @@ export interface DurableRunStatus {
   completedAt?: number;
   toolUses: number;
   resultPreview?: string;
+  resultPath?: string;
   error?: string;
   turnCount?: number;
   needsAttentionAt?: number;
@@ -34,6 +35,7 @@ export interface DurableRunReconciliationResult {
 export interface DurableRunStatusStore {
   write(record: AgentRecord): DurableRunStatus;
   get(id: string): DurableRunStatus | undefined;
+  readResult(id: string): string | undefined;
   readAll(): DurableRunStatus[];
   reconcileStaleRuns(): DurableRunReconciliationResult;
 }
@@ -69,6 +71,10 @@ function isActive(status: DurableRunStatusValue): status is DurableRunActiveStat
   return status === "queued" || status === "running";
 }
 
+function hasTerminalResult(record: AgentRecord): boolean {
+  return !isActive(record.status) && typeof record.result === "string" && record.result.trim().length > 0;
+}
+
 export class DurableRunStore implements DurableRunStatusStore {
   private readonly ownerPid: number;
   private readonly now: () => number;
@@ -81,6 +87,7 @@ export class DurableRunStore implements DurableRunStatusStore {
   }
 
   write(record: AgentRecord): DurableRunStatus {
+    const resultPath = hasTerminalResult(record) ? this.writeResultArtifact(record.id, record.result!) : undefined;
     const status: DurableRunStatus = {
       version: 1,
       id: record.id,
@@ -94,6 +101,7 @@ export class DurableRunStore implements DurableRunStatusStore {
       completedAt: record.completedAt,
       toolUses: record.toolUses,
       resultPreview: preview(record.result),
+      resultPath,
       error: record.error,
       turnCount: record.turnCount,
       needsAttentionAt: record.needsAttentionAt,
@@ -108,6 +116,17 @@ export class DurableRunStore implements DurableRunStatusStore {
       const statusPath = join(this.rootDir, safeSegment(id), "status.json");
       const parsed = JSON.parse(readFileSync(statusPath, "utf8")) as DurableRunStatus;
       return parsed.version === 1 && parsed.id === id ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  readResult(id: string): string | undefined {
+    const status = this.get(id);
+    if (!status?.resultPath) return undefined;
+    try {
+      if (!existsSync(status.resultPath)) return undefined;
+      return readFileSync(status.resultPath, "utf8");
     } catch {
       return undefined;
     }
@@ -168,5 +187,15 @@ export class DurableRunStore implements DurableRunStatusStore {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(tmp, `${JSON.stringify(status, null, 2)}\n`, "utf8");
     renameSync(tmp, file);
+  }
+
+  private writeResultArtifact(id: string, result: string): string {
+    const dir = join(this.rootDir, safeSegment(id));
+    const file = join(dir, "result.md");
+    const tmp = join(dir, `result.${process.pid}.${Date.now()}.tmp`);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(tmp, result, "utf8");
+    renameSync(tmp, file);
+    return file;
   }
 }

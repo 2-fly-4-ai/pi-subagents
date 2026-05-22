@@ -413,6 +413,9 @@ describe("AgentManager — durable background run status", () => {
       get(id: string) {
         return this.statuses.find((status) => status.id === id);
       },
+      readResult(id: string) {
+        return this.statuses.find((status) => status.id === id)?.resultPreview;
+      },
       readAll() {
         return this.statuses;
       },
@@ -498,6 +501,7 @@ describe("AgentManager — durable background run status", () => {
       updatedAt: 200,
       completedAt: 200,
       toolUses: 1,
+      resultPreview: "older result",
     };
     const newer: DurableRunStatus = {
       version: 1,
@@ -518,6 +522,7 @@ describe("AgentManager — durable background run status", () => {
 
     expect(manager.listDurableRuns().map((status) => status.id)).toEqual(["newer", "older"]);
     expect(manager.getDurableRun("older")).toEqual(older);
+    expect(manager.getDurableResult("older")).toBe(older.resultPreview);
     expect(manager.getDurableRun("missing")).toBeUndefined();
   });
 

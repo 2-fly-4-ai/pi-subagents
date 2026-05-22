@@ -501,6 +501,7 @@ export default function (pi: ExtensionAPI) {
       manager.spawn(piRef, ctx, type, prompt, options),
     getRecord: (id: string) => manager.getRecord(id),
     getDurableRun: (id: string) => manager.getDurableRun(id),
+    getDurableResult: (id: string) => manager.getDurableResult(id),
     listDurableRuns: () => manager.listDurableRuns(),
     scanLongRunningAgents: () => manager.scanLongRunningAgents(),
   };
@@ -1253,7 +1254,9 @@ Guidelines:
           `Type: ${displayName} | Status: ${durable.status} | Tool uses: ${durable.toolUses} | Duration: ${duration}\n` +
           `Description: ${durable.description}\n\n` +
           "Last-known durable status from a previous subagent process. Live session controls are unavailable.\n";
+        const durableResult = manager.getDurableResult(params.agent_id);
         if (durable.error) output += `\nError: ${durable.error}`;
+        else if (durableResult) output += `\nResult:\n${durableResult}`;
         else if (durable.resultPreview) output += `\nResult preview:\n${durable.resultPreview}`;
         else if (durable.status === "running" || durable.status === "queued") output += "\nThis run was still active when last observed.";
         else output += "\nNo output preview was persisted.";

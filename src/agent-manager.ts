@@ -470,6 +470,10 @@ export class AgentManager {
     try { return this.durableRunStore?.get(id); } catch { return undefined; }
   }
 
+  getDurableResult(id: string): string | undefined {
+    try { return this.durableRunStore?.readResult(id); } catch { return undefined; }
+  }
+
   getLastDurableRunReconciliation(): DurableRunReconciliationResult | undefined {
     return this.lastDurableRunReconciliation;
   }
