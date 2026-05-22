@@ -193,7 +193,7 @@ export class AgentManager {
     const promise = handle.promise
       .then((result) => {
         if (record.status !== "stopped" && record.status !== "paused") {
-          record.status = result.exitCode === 0 && !result.signal ? "completed" : "error";
+          record.status = result.state === "paused" ? "paused" : result.exitCode === 0 && !result.signal ? "completed" : "error";
         }
         record.result = result.resultText ?? result.output;
         record.error = record.status === "error" ? result.error ?? `Detached run exited with ${result.exitCode ?? result.signal}` : undefined;
@@ -622,6 +622,7 @@ export class AgentManager {
     if (!record || record.status !== "running") return false;
     record.session?.abort?.();
     record.abortController?.abort();
+    this.stopDetached(record, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
     record.status = "paused";
     record.result = message;
     record.completedAt = Date.now();
@@ -629,14 +630,15 @@ export class AgentManager {
     return true;
   }
 
-  private stopDetached(record: AgentRecord): void {
+  private stopDetached(record: AgentRecord, signal: NodeJS.Signals = "SIGTERM"): void {
     const pid = record.detachedRun?.pid;
     if (!pid) return;
     try {
-      process.kill(-pid, "SIGTERM");
+      process.kill(-pid, signal);
     } catch {
-      try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+      try { process.kill(pid, signal); } catch { /* ignore */ }
     }
+    if (signal !== "SIGTERM") return;
     setTimeout(() => {
       try {
         process.kill(-pid, "SIGKILL");

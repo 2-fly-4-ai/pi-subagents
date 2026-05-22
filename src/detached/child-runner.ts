@@ -22,6 +22,7 @@ export interface DetachedRunConfig {
 export interface DetachedRunResult {
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
+  readonly state?: DetachedChildState;
   readonly output: string;
   readonly resultText?: string;
   readonly error?: string;
@@ -56,11 +57,17 @@ export async function runDetachedChild(config: DetachedRunConfig): Promise<Detac
   writeAtomicJson(paths.statusPath, statusFor(config, "running"));
   await events.append({ type: "start", id: config.id, pid: process.pid, ts: Date.now() });
 
+  let interrupted = false;
   const child = spawn(config.command, config.args, {
     cwd: config.cwd,
     env: { ...process.env, ...config.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const interrupt = () => {
+    interrupted = true;
+    try { child.kill("SIGTERM"); } catch { /* ignore already-exited child */ }
+  };
+  process.once(process.platform === "win32" ? "SIGBREAK" : "SIGUSR2", interrupt);
 
   await events.append({ type: "child_spawn", id: config.id, pid: child.pid, command: config.command, args: config.args, ts: Date.now() });
   writeAtomicJson(paths.statusPath, statusFor(config, "running", { childPid: child.pid }));
@@ -95,14 +102,16 @@ export async function runDetachedChild(config: DetachedRunConfig): Promise<Detac
   });
 
   await stdout.close();
-  const success = result.exitCode === 0 && !result.signal;
-  const finalState: DetachedChildState = success ? "complete" : "failed";
+  process.off(process.platform === "win32" ? "SIGBREAK" : "SIGUSR2", interrupt);
+  const success = interrupted || (result.exitCode === 0 && !result.signal);
+  const finalState: DetachedChildState = interrupted ? "paused" : success ? "complete" : "failed";
   writeAtomicText(paths.resultTextPath, output);
   writeAtomicJson(paths.resultJsonPath, {
     id: config.id,
     type: config.type,
     description: config.description,
     success,
+    state: finalState,
     exitCode: result.exitCode,
     signal: result.signal,
     output,
@@ -116,9 +125,9 @@ export async function runDetachedChild(config: DetachedRunConfig): Promise<Detac
     resultPreview: output.length > 2_000 ? `${output.slice(0, 2_000)}…` : output,
     error: success ? undefined : result.error,
   }));
-  await events.append({ type: "complete", id: config.id, success, exitCode: result.exitCode, signal: result.signal, ts: Date.now() });
+  await events.append({ type: "complete", id: config.id, success, state: finalState, exitCode: result.exitCode, signal: result.signal, ts: Date.now() });
   await events.close();
-  return result;
+  return { ...result, state: finalState };
 }
 
 export function readDetachedConfig(path: string): DetachedRunConfig {
