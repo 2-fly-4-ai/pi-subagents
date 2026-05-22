@@ -48,8 +48,9 @@ describe("buildDoctorReport", () => {
     });
 
     expect(report).toContain("Subagents doctor");
+    expect(report).toContain("detached runner");
     expect(report).toContain("durable run directory");
-    expect(report).toContain("durable run statuses: 1 total, 0 active, 1 error, 1 stale");
+    expect(report).toContain("durable run statuses: 1 total, 0 active, 1 error, 1 stale, 0 detached");
     expect(report).toContain("models: 2 available");
   });
 });

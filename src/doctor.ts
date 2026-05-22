@@ -53,14 +53,27 @@ function checkPackageRoot(packageRoot: string | undefined): DoctorCheck {
   };
 }
 
+function checkDetachedRunner(packageRoot: string | undefined): DoctorCheck {
+  if (!packageRoot) return { name: "detached runner", status: "warning", detail: "package root unavailable" };
+  const distRunner = join(packageRoot, "dist", "detached", "child-runner.js");
+  const srcRunner = join(packageRoot, "src", "detached", "child-runner.ts");
+  const ok = existsSync(distRunner) || existsSync(srcRunner);
+  return {
+    name: "detached runner",
+    status: ok ? "ok" : "error",
+    detail: ok ? `found (${existsSync(distRunner) ? distRunner : srcRunner})` : `missing ${distRunner}`,
+  };
+}
+
 function checkDurableRuns(runs: readonly DurableRunStatus[]): DoctorCheck {
   const stale = runs.filter((run) => run.stale).length;
   const active = runs.filter((run) => run.status === "running" || run.status === "queued").length;
+  const detached = runs.filter((run) => run.childPid !== undefined).length;
   const errored = runs.filter((run) => run.status === "error").length;
   return {
     name: "durable run statuses",
     status: stale > 0 || errored > 0 ? "warning" : "ok",
-    detail: `${runs.length} total, ${active} active, ${errored} error, ${stale} stale`,
+    detail: `${runs.length} total, ${active} active, ${errored} error, ${stale} stale, ${detached} detached`,
   };
 }
 
@@ -77,6 +90,7 @@ function checkRecentRunDir(): DoctorCheck {
 export function buildDoctorReport(deps: DoctorDeps): string {
   const checks: DoctorCheck[] = [
     checkPackageRoot(deps.packageRoot),
+    checkDetachedRunner(deps.packageRoot),
     checkWritableDir(join(getAgentDir(), "subagents", "runs")),
     checkAgentDirs(deps.cwd),
     checkRecentRunDir(),

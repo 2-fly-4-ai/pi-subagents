@@ -13,6 +13,7 @@ export interface DurableRunStatus {
   description: string;
   status: DurableRunStatusValue;
   ownerPid: number;
+  childPid?: number;
   cwd?: string;
   startedAt: number;
   updatedAt: number;
@@ -99,6 +100,7 @@ export class DurableRunStore implements DurableRunStatusStore {
       description: record.description,
       status: record.status,
       ownerPid: this.ownerPid,
+      childPid: record.detachedRun?.pid,
       cwd: record.cwd,
       startedAt: record.startedAt,
       updatedAt: this.now(),
