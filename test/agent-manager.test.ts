@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentManager } from "../src/agent-manager.js";
+import type { DurableRunStatus } from "../src/durable-run-store.js";
 import type { AgentRecord } from "../src/types.js";
 
 vi.mock("../src/agent-runner.js", () => ({
@@ -390,9 +391,10 @@ describe("AgentManager — durable background run status", () => {
     manager?.dispose();
   });
 
-  function fakeStore() {
+  function fakeStore(reconciliation = { reconciled: [] as DurableRunStatus[], active: [] as DurableRunStatus[] }) {
     return {
       writes: [] as AgentRecord[],
+      statuses: [] as DurableRunStatus[],
       reconciled: false,
       write(record: AgentRecord) {
         this.writes.push({ ...record });
@@ -408,19 +410,45 @@ describe("AgentManager — durable background run status", () => {
           toolUses: record.toolUses,
         };
       },
+      get(id: string) {
+        return this.statuses.find((status) => status.id === id);
+      },
+      readAll() {
+        return this.statuses;
+      },
       reconcileStaleRuns() {
         this.reconciled = true;
-        return { reconciled: [], active: [] };
+        return reconciliation;
       },
     };
   }
 
   it("reconciles durable statuses when constructed", () => {
-    const store = fakeStore();
+    const staleStatus: DurableRunStatus = {
+      version: 1,
+      id: "stale",
+      type: "worker",
+      description: "stale run",
+      status: "error",
+      ownerPid: 123,
+      startedAt: 1,
+      updatedAt: 2,
+      completedAt: 2,
+      toolUses: 0,
+      stale: true,
+      error: "owner died",
+    };
+    const store = fakeStore({ reconciled: [staleStatus], active: [] });
+    let seen: any;
 
-    manager = new AgentManager(undefined, undefined, undefined, undefined, { durableRunStore: store });
+    manager = new AgentManager(undefined, undefined, undefined, undefined, {
+      durableRunStore: store,
+      onDurableRunsReconciled: (result) => { seen = result; },
+    });
 
     expect(store.reconciled).toBe(true);
+    expect(seen).toEqual({ reconciled: [staleStatus], active: [] });
+    expect(manager.getLastDurableRunReconciliation()).toEqual(seen);
   });
 
   it("persists background status transitions but not foreground runs", async () => {
@@ -455,6 +483,42 @@ describe("AgentManager — durable background run status", () => {
       "completed",
     ]);
     expect(store.writes.at(-1)).toMatchObject({ result: "done", toolUses: 1 });
+  });
+
+  it("lists and looks up durable statuses", () => {
+    const store = fakeStore();
+    const older: DurableRunStatus = {
+      version: 1,
+      id: "older",
+      type: "worker",
+      description: "older run",
+      status: "completed",
+      ownerPid: 1,
+      startedAt: 100,
+      updatedAt: 200,
+      completedAt: 200,
+      toolUses: 1,
+    };
+    const newer: DurableRunStatus = {
+      version: 1,
+      id: "newer",
+      type: "planner",
+      description: "newer run",
+      status: "error",
+      ownerPid: 1,
+      startedAt: 300,
+      updatedAt: 400,
+      completedAt: 400,
+      toolUses: 0,
+      error: "boom",
+    };
+    store.statuses.push(older, newer);
+
+    manager = new AgentManager(undefined, undefined, undefined, undefined, { durableRunStore: store });
+
+    expect(manager.listDurableRuns().map((status) => status.id)).toEqual(["newer", "older"]);
+    expect(manager.getDurableRun("older")).toEqual(older);
+    expect(manager.getDurableRun("missing")).toBeUndefined();
   });
 
   it("persists stopped status when a queued background run is aborted", () => {

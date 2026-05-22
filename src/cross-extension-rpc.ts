@@ -1,7 +1,7 @@
 /**
  * Cross-extension RPC handlers for the subagents extension.
  *
- * Exposes ping, spawn, and stop RPCs over the pi.events event bus,
+ * Exposes ping, spawn, stop, status, and list RPCs over the pi.events event bus,
  * using per-request scoped reply channels.
  *
  * Reply envelope follows pi-mono convention:
@@ -23,12 +23,15 @@ export type RpcReply<T = void> =
   | { success: false; error: string };
 
 /** RPC protocol version — bumped when the envelope or method contracts change. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** Minimal AgentManager interface needed by the spawn/stop RPCs. */
 export interface SpawnCapable {
   spawn(pi: unknown, ctx: unknown, type: string, prompt: string, options: any): string;
   abort(id: string): boolean;
+  getRecord?(id: string): unknown;
+  getDurableRun?(id: string): unknown;
+  listDurableRuns?(): unknown[];
 }
 
 export interface RpcDeps {
@@ -42,6 +45,8 @@ export interface RpcHandle {
   unsubPing: () => void;
   unsubSpawn: () => void;
   unsubStop: () => void;
+  unsubStatus: () => void;
+  unsubList: () => void;
 }
 
 /**
@@ -118,5 +123,20 @@ export function registerRpcHandlers(deps: RpcDeps): RpcHandle {
     },
   );
 
-  return { unsubPing, unsubSpawn, unsubStop };
+  const unsubStatus = handleRpc<{ requestId: string; agentId: string }>(
+    events, "subagents:rpc:status", ({ agentId }) => {
+      const live = manager.getRecord?.(agentId);
+      const durable = manager.getDurableRun?.(agentId);
+      if (!live && !durable) throw new Error("Agent not found");
+      return { live, durable };
+    },
+  );
+
+  const unsubList = handleRpc<{ requestId: string }>(
+    events, "subagents:rpc:list", () => {
+      return { durable: manager.listDurableRuns?.() ?? [] };
+    },
+  );
+
+  return { unsubPing, unsubSpawn, unsubStop, unsubStatus, unsubList };
 }

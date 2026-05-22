@@ -451,7 +451,25 @@ export default function (pi: ExtensionAPI) {
       tokensBefore: info.tokensBefore,
       compactionCount: record.compactionCount,
     });
-  }, { durableRunStore });
+  }, {
+    durableRunStore,
+    onDurableRunsReconciled: (result) => {
+      for (const status of result.reconciled) {
+        appendAudit("subagent_stale_reconciled", {
+          id: status.id,
+          type: status.type,
+          description: status.description,
+          status: status.status,
+          cwd: status.cwd,
+          ownerPid: status.ownerPid,
+          startedAt: status.startedAt,
+          completedAt: status.completedAt,
+          error: status.error,
+        });
+        pi.events.emit("subagents:stale_reconciled", status);
+      }
+    },
+  });
 
   // Expose manager via Symbol.for() global registry for cross-package access.
   // Standard Node.js pattern for cross-package singletons (used by OpenTelemetry, etc.).
@@ -462,6 +480,8 @@ export default function (pi: ExtensionAPI) {
     spawn: (piRef: any, ctx: any, type: string, prompt: string, options: any) =>
       manager.spawn(piRef, ctx, type, prompt, options),
     getRecord: (id: string) => manager.getRecord(id),
+    getDurableRun: (id: string) => manager.getDurableRun(id),
+    listDurableRuns: () => manager.listDurableRuns(),
   };
 
   // --- Cross-extension RPC via pi.events ---
@@ -1201,7 +1221,22 @@ Guidelines:
     execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
       const record = manager.getRecord(params.agent_id);
       if (!record) {
-        return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`);
+        const durable = manager.getDurableRun(params.agent_id);
+        if (!durable) {
+          return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`);
+        }
+        const displayName = getDisplayName(durable.type);
+        const duration = formatDuration(durable.startedAt, durable.completedAt);
+        let output =
+          `Agent: ${durable.id}\n` +
+          `Type: ${displayName} | Status: ${durable.status} | Tool uses: ${durable.toolUses} | Duration: ${duration}\n` +
+          `Description: ${durable.description}\n\n` +
+          "Last-known durable status from a previous subagent process. Live session controls are unavailable.\n";
+        if (durable.error) output += `\nError: ${durable.error}`;
+        else if (durable.resultPreview) output += `\nResult preview:\n${durable.resultPreview}`;
+        else if (durable.status === "running" || durable.status === "queued") output += "\nThis run was still active when last observed.";
+        else output += "\nNo output preview was persisted.";
+        return textResult(output);
       }
 
       // Wait for completion if requested.
@@ -1274,6 +1309,14 @@ Guidelines:
     execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
       const record = manager.getRecord(params.agent_id);
       if (!record) {
+        const durable = manager.getDurableRun(params.agent_id);
+        if (durable) {
+          return textResult(
+            `Agent "${params.agent_id}" is not available for steering. Last-known durable status: ${durable.status}` +
+            (durable.error ? ` (${durable.error})` : "") +
+            ".",
+          );
+        }
         return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`);
       }
       if (record.status !== "running") {

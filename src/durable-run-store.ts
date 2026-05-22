@@ -30,6 +30,8 @@ export interface DurableRunReconciliationResult {
 
 export interface DurableRunStatusStore {
   write(record: AgentRecord): DurableRunStatus;
+  get(id: string): DurableRunStatus | undefined;
+  readAll(): DurableRunStatus[];
   reconcileStaleRuns(): DurableRunReconciliationResult;
 }
 
@@ -93,6 +95,16 @@ export class DurableRunStore implements DurableRunStatusStore {
     };
     this.writeStatus(status);
     return status;
+  }
+
+  get(id: string): DurableRunStatus | undefined {
+    try {
+      const statusPath = join(this.rootDir, safeSegment(id), "status.json");
+      const parsed = JSON.parse(readFileSync(statusPath, "utf8")) as DurableRunStatus;
+      return parsed.version === 1 && parsed.id === id ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   readAll(): DurableRunStatus[] {

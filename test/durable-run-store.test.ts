@@ -70,6 +70,20 @@ describe("DurableRunStore", () => {
     expect(status.resultPreview?.endsWith("…")).toBe(true);
   });
 
+  it("looks up existing statuses by original id", () => {
+    const root = tempRoot();
+    const store = new DurableRunStore(root, { ownerPid: 123, now: () => 456 });
+
+    store.write(record({ id: "agent/one", status: "completed", result: "done" }));
+
+    expect(store.get("agent/one")).toMatchObject({
+      id: "agent/one",
+      status: "completed",
+      resultPreview: "done",
+    });
+    expect(store.get("missing")).toBeUndefined();
+  });
+
   it("marks stale queued and running records owned by dead processes as error", () => {
     const root = tempRoot();
     const writer = new DurableRunStore(root, { ownerPid: 111, now: () => 1_000 });

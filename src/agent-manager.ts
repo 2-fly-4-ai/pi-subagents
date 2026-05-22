@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import type { Model } from "@mariozechner/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
-import type { DurableRunStatusStore } from "./durable-run-store.js";
+import type { DurableRunReconciliationResult, DurableRunStatus, DurableRunStatusStore } from "./durable-run-store.js";
 import type { AgentInvocation, AgentRecord, IsolationMode, SubagentType, ThinkingLevel } from "./types.js";
 import { addUsage } from "./usage.js";
 import { cleanupWorktree, createWorktree, pruneWorktrees, } from "./worktree.js";
@@ -22,6 +22,7 @@ export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; toke
 
 export interface AgentManagerOptions {
   durableRunStore?: DurableRunStatusStore;
+  onDurableRunsReconciled?: (result: DurableRunReconciliationResult) => void;
 }
 
 /** Default max concurrent background agents. */
@@ -77,6 +78,7 @@ export class AgentManager {
   private onCompact?: OnAgentCompact;
   private maxConcurrent: number;
   private durableRunStore?: DurableRunStatusStore;
+  private lastDurableRunReconciliation?: DurableRunReconciliationResult;
 
   /** Queue of background agents waiting to start. */
   private queue: { id: string; args: SpawnArgs }[] = [];
@@ -95,7 +97,11 @@ export class AgentManager {
     this.onCompact = onCompact;
     this.maxConcurrent = maxConcurrent;
     this.durableRunStore = options.durableRunStore;
-    try { this.durableRunStore?.reconcileStaleRuns(); } catch { /* durable status is best-effort */ }
+    try {
+      const reconciliation = this.durableRunStore?.reconcileStaleRuns();
+      this.lastDurableRunReconciliation = reconciliation;
+      if (reconciliation) options.onDurableRunsReconciled?.(reconciliation);
+    } catch { /* durable status is best-effort */ }
     // Cleanup completed agents after 10 minutes (but keep sessions for resume)
     this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
     this.cleanupInterval.unref();
@@ -405,6 +411,22 @@ export class AgentManager {
     return [...this.agents.values()].sort(
       (a, b) => b.startedAt - a.startedAt,
     );
+  }
+
+  listDurableRuns(): DurableRunStatus[] {
+    try {
+      return this.durableRunStore?.readAll().sort((a, b) => b.startedAt - a.startedAt) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  getDurableRun(id: string): DurableRunStatus | undefined {
+    try { return this.durableRunStore?.get(id); } catch { return undefined; }
+  }
+
+  getLastDurableRunReconciliation(): DurableRunReconciliationResult | undefined {
+    return this.lastDurableRunReconciliation;
   }
 
   abort(id: string): boolean {
