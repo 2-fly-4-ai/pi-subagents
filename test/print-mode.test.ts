@@ -64,6 +64,36 @@ function makeHeadlessCtx() {
   } as any;
 }
 
+describe("Agent tool routing", () => {
+  afterEach(() => {
+    delete process.env.PI_SUBAGENTS_IN_PROCESS_BACKGROUND;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("rejects unknown agent types instead of falling back to general-purpose", async () => {
+    const { pi, tools } = makePi();
+    subagentsExtension(pi);
+
+    const agentTool = tools.get("Agent");
+    const result = await agentTool.execute(
+      "tool-call-unknown",
+      {
+        prompt: "inspect the codebase",
+        description: "bad route",
+        subagent_type: "planner",
+      },
+      undefined,
+      undefined,
+      makeHeadlessCtx(),
+    );
+
+    expect(result.content[0].text).toContain('Unknown agent type "planner"');
+    expect(result.content[0].text).toContain("Available agent types");
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+});
+
 describe("print mode background notifications", () => {
   afterEach(() => {
     delete process.env.PI_SUBAGENTS_IN_PROCESS_BACKGROUND;

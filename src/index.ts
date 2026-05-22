@@ -695,6 +695,19 @@ export default function (pi: ExtensionAPI) {
     return name.replace(/-\d{8}$/, "");
   }
 
+  function formatUnknownAgentType(rawType: string): string {
+    const available = getAvailableTypes();
+    const lower = rawType.toLowerCase();
+    const suggestions = available
+      .filter((name) => {
+        const candidate = name.toLowerCase();
+        return candidate.includes(lower) || lower.includes(candidate);
+      })
+      .slice(0, 3);
+    const suggestionText = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(", ")}?` : "";
+    return `Unknown agent type "${rawType}".${suggestionText}\nAvailable agent types: ${available.join(", ")}.`;
+  }
+
   const typeListText = buildTypeListText();
 
   // Apply persisted settings on startup and emit `subagents:settings_loaded`.
@@ -745,11 +758,16 @@ The Agent tool launches specialized agents that autonomously handle complex task
 Available agent types:
 ${typeListText}
 
+Routing guidelines:
+- subagent_type must be one of the available type names exactly (case-insensitive); unknown names are rejected rather than silently routed.
+- Use the narrowest capable agent. Do not use general-purpose just because a task is complex.
+- Use Explore for read-only codebase searches, repo inspection, evidence gathering, or understanding existing behavior.
+- Use Plan for architecture, implementation planning, sequencing, tradeoff analysis, or design review.
+- Use a matching custom agent when the task fits its specialty.
+- Use general-purpose only when the task likely requires file edits, command execution with state changes, or broad implementation work.
+
 Guidelines:
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
-- Use Explore for codebase searches and code understanding.
-- Use Plan for architecture and implementation planning.
-- Use general-purpose for complex tasks that need file editing.
 - Provide clear, detailed prompts so the agent can work autonomously.
 - Agent results are returned as text — summarize them for the user.
 - Use run_in_background for work you don't need immediately. You will be notified when it completes.
@@ -768,7 +786,7 @@ Guidelines:
         description: "A short (3-5 word) description of the task (shown in UI).",
       }),
       subagent_type: Type.String({
-        description: `The type of specialized agent to use. Available types: ${getAvailableTypes().join(", ")}. Custom agents from .pi/agents/*.md (project) or ${getAgentDir()}/agents/*.md (global) are also available.`,
+        description: `Required. Must exactly match one available agent type (case-insensitive): ${getAvailableTypes().join(", ")}. Unknown names are rejected; do not invent aliases. Custom agents from .pi/agents/*.md (project) or ${getAgentDir()}/agents/*.md (global) are also available.`,
       }),
       model: Type.Optional(
         Type.String({
@@ -919,10 +937,19 @@ Guidelines:
       // Reload custom agents from the active session cwd so stale process cwd cannot leak agents across repos.
       reloadCustomAgents(ctx.cwd);
 
-      const rawType = params.subagent_type as SubagentType;
+      const rawType = String(params.subagent_type ?? "").trim() as SubagentType;
       const resolved = resolveType(rawType);
-      const subagentType = resolved ?? "general-purpose";
-      const fellBack = resolved === undefined;
+      if (!resolved) {
+        appendAudit("subagent_spawn_rejected", {
+          toolCallId,
+          rawType,
+          reason: "unknown_agent_type",
+          availableTypes: getAvailableTypes(),
+          promptExcerpt: excerpt(params.prompt),
+        });
+        return textResult(formatUnknownAgentType(rawType));
+      }
+      const subagentType = resolved;
 
       const displayName = getDisplayName(subagentType);
 
@@ -989,6 +1016,8 @@ Guidelines:
       if (workspaceViolation) {
         appendAudit("subagent_spawn_blocked", {
           toolCallId,
+          rawType,
+          resolvedType: subagentType,
           type: subagentType,
           description: params.description,
           cwd: parentWorkspace.cwd,
@@ -1005,6 +1034,8 @@ Guidelines:
 
       appendAudit("subagent_spawn_requested", {
         toolCallId,
+        rawType,
+        resolvedType: subagentType,
         type: subagentType,
         description: params.description,
         cwd: parentWorkspace.cwd,
@@ -1240,19 +1271,15 @@ Guidelines:
 
       const details = buildDetails(detailBase, record, fgState, { tokens: tokenText });
 
-      const fallbackNote = fellBack
-        ? `Note: Unknown agent type "${rawType}" — using general-purpose.\n\n`
-        : "";
-
       if (record.status === "error") {
-        return textResult(`${fallbackNote}Agent failed: ${record.error}`, details);
+        return textResult(`Agent failed: ${record.error}`, details);
       }
 
       const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
       const statsParts = [`${record.toolUses} tool uses`];
       if (tokenText) statsParts.push(tokenText);
       return textResult(
-        `${fallbackNote}Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status)}.\n\n` +
+        `Agent completed in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status)}.\n\n` +
         (record.result?.trim() || "No output."),
         details,
       );
