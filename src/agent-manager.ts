@@ -7,10 +7,15 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import type { Model } from "@mariozechner/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import { getAgentConfig, getToolNamesForType } from "./agent-types.js";
 import { completionGuardWarning, expectsImplementationMutation, isMutatingTool } from "./completion-guard.js";
+import { buildParentContext } from "./context.js";
+import { spawnDetachedRun } from "./detached/spawn.js";
 import type { DurableRunReconciliationResult, DurableRunStatus, DurableRunStatusStore } from "./durable-run-store.js";
 import {
   DEFAULT_LONG_RUNNING_GUARD,
@@ -30,6 +35,10 @@ export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; toke
 
 export interface AgentManagerOptions {
   durableRunStore?: DurableRunStatusStore;
+  detachedRunRoot?: string;
+  detachedChildRunnerPath?: string;
+  detachedCommand?: string;
+  detachedArgsOverride?: readonly string[];
   onDurableRunsReconciled?: (result: DurableRunReconciliationResult) => void;
   longRunningGuard?: false | Partial<LongRunningGuardConfig>;
   onNeedsAttention?: (record: AgentRecord, notice: LongRunningNotice) => void;
@@ -89,6 +98,10 @@ export class AgentManager {
   private onCompact?: OnAgentCompact;
   private maxConcurrent: number;
   private durableRunStore?: DurableRunStatusStore;
+  private detachedRunRoot: string;
+  private detachedChildRunnerPath?: string;
+  private detachedCommand?: string;
+  private detachedArgsOverride?: readonly string[];
   private lastDurableRunReconciliation?: DurableRunReconciliationResult;
   private longRunningGuard?: LongRunningGuardConfig;
   private onNeedsAttention?: (record: AgentRecord, notice: LongRunningNotice) => void;
@@ -110,6 +123,10 @@ export class AgentManager {
     this.onCompact = onCompact;
     this.maxConcurrent = maxConcurrent;
     this.durableRunStore = options.durableRunStore;
+    this.detachedRunRoot = options.detachedRunRoot ?? join(getAgentDir(), "subagents", "runs");
+    this.detachedChildRunnerPath = options.detachedChildRunnerPath;
+    this.detachedCommand = options.detachedCommand;
+    this.detachedArgsOverride = options.detachedArgsOverride;
     this.onNeedsAttention = options.onNeedsAttention;
     this.longRunningGuard = options.longRunningGuard === false
       ? undefined
@@ -127,6 +144,77 @@ export class AgentManager {
   private persist(record: AgentRecord): void {
     if (!record.isBackground) return;
     try { this.durableRunStore?.write(record); } catch { /* durable status is best-effort */ }
+  }
+
+  private shouldUseDetachedBackground(options: SpawnOptions): boolean {
+    return options.isBackground === true && process.env.PI_SUBAGENTS_IN_PROCESS_BACKGROUND !== "1";
+  }
+
+  private buildDetachedPiArgs(ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string[] {
+    const agentConfig = getAgentConfig(type);
+    const toolNames = getToolNamesForType(type)
+      .filter((name) => !["Agent", "get_subagent_result", "steer_subagent", "control_subagent"].includes(name))
+      .filter((name) => !agentConfig?.disallowedTools?.includes(name));
+    const args = [
+      "--mode", "json",
+      "--print",
+      "--no-extensions",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-context-files",
+    ];
+    if (toolNames.length > 0) args.push("--tools", toolNames.join(","));
+    const systemPrompt = agentConfig?.promptMode === "append"
+      ? `${ctx.getSystemPrompt()}\n\n${agentConfig.systemPrompt}`
+      : agentConfig?.systemPrompt;
+    if (systemPrompt) args.push("--system-prompt", systemPrompt);
+    if (options.model && modelLabel(options.model) !== "parent-model") args.push("--model", modelLabel(options.model));
+    if (options.thinkingLevel) args.push("--thinking", options.thinkingLevel);
+    const effectivePrompt = options.inheritContext && buildParentContext(ctx)
+      ? `${buildParentContext(ctx)}${prompt}`
+      : prompt;
+    args.push(effectivePrompt);
+    return args;
+  }
+
+  private startDetachedAgent(id: string, record: AgentRecord, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): void {
+    const handle = spawnDetachedRun({
+      id,
+      type,
+      description: options.description,
+      cwd: record.cwd ?? ctx.cwd,
+      runRoot: this.detachedRunRoot,
+      command: this.detachedCommand ?? "pi",
+      args: this.detachedArgsOverride ?? this.buildDetachedPiArgs(ctx, type, prompt, options),
+      childRunnerPath: this.detachedChildRunnerPath,
+    });
+    record.detachedRun = { pid: handle.pid, runDir: handle.paths.runDir };
+    this.persist(record);
+    const promise = handle.promise
+      .then((result) => {
+        if (record.status !== "stopped" && record.status !== "paused") {
+          record.status = result.exitCode === 0 && !result.signal ? "completed" : "error";
+        }
+        record.result = result.resultText ?? result.output;
+        record.error = record.status === "error" ? result.error ?? `Detached run exited with ${result.exitCode ?? result.signal}` : undefined;
+        record.completedAt ??= Date.now();
+        this.persist(record);
+        this.runningBackground--;
+        try { this.onComplete?.(record); } catch { /* ignore completion side-effect errors */ }
+        this.drainQueue();
+        return record.result ?? "";
+      })
+      .catch((err) => {
+        if (record.status !== "stopped" && record.status !== "paused") record.status = "error";
+        record.error = err instanceof Error ? err.message : String(err);
+        record.completedAt ??= Date.now();
+        this.persist(record);
+        this.runningBackground--;
+        this.onComplete?.(record);
+        this.drainQueue();
+        return "";
+      });
+    record.promise = promise;
   }
 
   private async runAgentWithModelFallback(
@@ -268,6 +356,11 @@ export class AgentManager {
     if (options.isBackground) this.runningBackground++;
     this.persist(record);
     this.onStart?.(record);
+
+    if (this.shouldUseDetachedBackground(options)) {
+      this.startDetachedAgent(id, record, ctx, type, prompt, options);
+      return;
+    }
 
     // Wire parent abort signal to stop the subagent when the parent is interrupted
     let detachParentSignal: (() => void) | undefined;
@@ -536,6 +629,23 @@ export class AgentManager {
     return true;
   }
 
+  private stopDetached(record: AgentRecord): void {
+    const pid = record.detachedRun?.pid;
+    if (!pid) return;
+    try {
+      process.kill(-pid, "SIGTERM");
+    } catch {
+      try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+    }
+    setTimeout(() => {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        try { process.kill(pid, "SIGKILL"); } catch { /* ignore */ }
+      }
+    }, 1_500).unref?.();
+  }
+
   abort(id: string): boolean {
     const record = this.agents.get(id);
     if (!record) return false;
@@ -551,6 +661,7 @@ export class AgentManager {
 
     if (record.status !== "running") return false;
     record.abortController?.abort();
+    this.stopDetached(record);
     record.status = "stopped";
     record.completedAt = Date.now();
     this.persist(record);
@@ -609,6 +720,7 @@ export class AgentManager {
     for (const record of this.agents.values()) {
       if (record.status === "running") {
         record.abortController?.abort();
+        this.stopDetached(record);
         record.status = "stopped";
         record.completedAt = Date.now();
         this.persist(record);

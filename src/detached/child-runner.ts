@@ -23,6 +23,7 @@ export interface DetachedRunResult {
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly output: string;
+  readonly resultText?: string;
   readonly error?: string;
 }
 

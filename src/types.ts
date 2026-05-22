@@ -84,6 +84,8 @@ export interface AgentRecord {
   cwd?: string;
   /** Worktree info if the agent is running in an isolated worktree. */
   worktree?: { path: string; branch: string };
+  /** Detached child-process run metadata, present for detached background runs. */
+  detachedRun?: { pid?: number; runDir: string };
   /** Worktree cleanup result after agent completion. */
   worktreeResult?: { hasChanges: boolean; branch?: string };
   /** The tool_use_id from the original Agent tool call. */

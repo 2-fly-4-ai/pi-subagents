@@ -66,11 +66,13 @@ function makeHeadlessCtx() {
 
 describe("print mode background notifications", () => {
   afterEach(() => {
+    delete process.env.PI_SUBAGENTS_IN_PROCESS_BACKGROUND;
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
   it("ignores stale-context errors from delayed completion nudges", async () => {
+    process.env.PI_SUBAGENTS_IN_PROCESS_BACKGROUND = "1";
     vi.mocked(runAgent).mockResolvedValue({
       responseText: "done",
       session: { dispose: vi.fn() } as any,

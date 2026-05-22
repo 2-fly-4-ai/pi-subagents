@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentManager } from "../src/agent-manager.js";
 import type { DurableRunStatus } from "../src/durable-run-store.js";
 import type { AgentRecord } from "../src/types.js";
@@ -18,6 +18,10 @@ import { runAgent } from "../src/agent-runner.js";
 
 const mockPi = {} as any;
 const mockCtx = { cwd: "/tmp" } as any;
+
+beforeEach(() => {
+  process.env.PI_SUBAGENTS_IN_PROCESS_BACKGROUND = "1";
+});
 
 const mockSession = () => ({ dispose: vi.fn() } as any);
 
