@@ -20,6 +20,7 @@ import { AgentManager } from "./agent-manager.js";
 import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, normalizeMaxTurns, setDefaultMaxTurns, setGraceTurns, steerAgent } from "./agent-runner.js";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getDefaultAgentNames, getUserAgentNames, registerAgents, resolveType } from "./agent-types.js";
 import { appendAudit, excerpt } from "./audit-log.js";
+import { createCompletionDedupe } from "./completion-dedupe.js";
 import { registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
 import { findPromptWorkspaceMismatch, resolveWorkspace } from "./cwd-guard.js";
@@ -278,6 +279,7 @@ export default function (pi: ExtensionAPI) {
   // before they reach pi.sendMessage (fire-and-forget).
   const pendingNudges = new Map<string, ReturnType<typeof setTimeout>>();
   const NUDGE_HOLD_MS = 200;
+  const completionDedupe = createCompletionDedupe(10 * 60_000);
 
   function scheduleNudge(key: string, send: () => void, delay = NUDGE_HOLD_MS) {
     cancelNudge(key);
@@ -388,6 +390,16 @@ export default function (pi: ExtensionAPI) {
 
   // Background completion: route through group join or send individual nudge
   const manager = new AgentManager((record) => {
+    if (completionDedupe.isDuplicate(record, "manager:onComplete")) {
+      appendAudit("subagent_completion_deduped", {
+        id: record.id,
+        type: record.type,
+        status: record.status,
+        completedAt: record.completedAt,
+      });
+      return;
+    }
+
     // Emit lifecycle event based on terminal status
     const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted";
     const eventData = buildEventData(record);
