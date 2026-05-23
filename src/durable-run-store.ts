@@ -80,6 +80,59 @@ function hasTerminalResult(record: AgentRecord): boolean {
   return !isActive(record.status) && typeof record.result === "string" && record.result.trim().length > 0;
 }
 
+interface DetachedResultArtifact {
+  success?: boolean;
+  state?: "complete" | "failed" | "paused" | string;
+  output?: string;
+  error?: string;
+}
+
+function statusFromDetachedResult(status: DurableRunStatus, runDir: string, now: number): DurableRunStatus | undefined {
+  const resultJsonPath = join(runDir, "result.json");
+  if (!existsSync(resultJsonPath)) return undefined;
+
+  let result: DetachedResultArtifact;
+  try {
+    result = JSON.parse(readFileSync(resultJsonPath, "utf8")) as DetachedResultArtifact;
+  } catch {
+    return undefined;
+  }
+
+  const resultTextPath = join(runDir, "result.md");
+  let resultText: string | undefined;
+  try {
+    if (existsSync(resultTextPath)) resultText = readFileSync(resultTextPath, "utf8");
+  } catch {
+    // result.json is enough to repair status; result.md is best-effort.
+  }
+
+  const state = result.state;
+  const repairedStatus: DurableRunTerminalStatus = state === "paused"
+    ? "paused"
+    : result.success === true || state === "complete"
+      ? "completed"
+      : "error";
+
+  return {
+    ...status,
+    status: repairedStatus,
+    updatedAt: now,
+    completedAt: status.completedAt ?? now,
+    resultPath: resultText !== undefined ? resultTextPath : status.resultPath,
+    resultPreview: preview(resultText ?? result.output ?? status.resultPreview),
+    error: repairedStatus === "error"
+      ? result.error ?? status.error ?? "Detached result artifact indicates failure."
+      : undefined,
+  };
+}
+
+function staleErrorMessage(status: DurableRunStatus): string {
+  if (typeof status.childPid === "number") {
+    return `Subagent owner process ${status.ownerPid} and detached child process ${status.childPid} are no longer running; marked stale.`;
+  }
+  return `Subagent owner process ${status.ownerPid} is no longer running; marked stale.`;
+}
+
 export class DurableRunStore implements DurableRunStatusStore {
   private readonly ownerPid: number;
   private readonly now: () => number;
@@ -170,7 +223,18 @@ export class DurableRunStore implements DurableRunStatusStore {
 
     for (const status of this.readAll()) {
       if (!isActive(status.status)) continue;
-      if (status.ownerPid === this.ownerPid || this.isProcessAlive(status.ownerPid)) {
+
+      const runDir = join(this.rootDir, safeSegment(status.id));
+      const repairedStatus = statusFromDetachedResult(status, runDir, this.now());
+      if (repairedStatus) {
+        this.writeStatus(repairedStatus);
+        reconciled.push(repairedStatus);
+        continue;
+      }
+
+      const ownerAlive = status.ownerPid === this.ownerPid || this.isProcessAlive(status.ownerPid);
+      const childAlive = typeof status.childPid === "number" && this.isProcessAlive(status.childPid);
+      if (ownerAlive || childAlive) {
         active.push(status);
         continue;
       }
@@ -181,7 +245,7 @@ export class DurableRunStore implements DurableRunStatusStore {
         stale: true,
         completedAt: this.now(),
         updatedAt: this.now(),
-        error: `Subagent owner process ${status.ownerPid} is no longer running; marked stale.`,
+        error: staleErrorMessage(status),
       };
       this.writeStatus(staleStatus);
       reconciled.push(staleStatus);

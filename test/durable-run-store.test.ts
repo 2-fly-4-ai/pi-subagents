@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -145,5 +145,56 @@ describe("DurableRunStore", () => {
       status: "running",
       updatedAt: 1_000,
     });
+  });
+
+  it("leaves detached active records alone when the child runner is still alive", () => {
+    const root = tempRoot();
+    const writer = new DurableRunStore(root, { ownerPid: 111, now: () => 1_000 });
+    writer.write(record({ id: "detached", status: "running", detachedRun: { pid: 333, runDir: join(root, "detached") } }));
+
+    const reconciler = new DurableRunStore(root, {
+      ownerPid: 222,
+      now: () => 2_000,
+      isProcessAlive: (pid) => pid === 333,
+    });
+
+    const result = reconciler.reconcileStaleRuns();
+
+    expect(result.reconciled).toEqual([]);
+    expect(result.active.map((s) => s.id)).toEqual(["detached"]);
+    expect(readStatus(root, "detached")).toMatchObject({
+      id: "detached",
+      status: "running",
+      childPid: 333,
+      updatedAt: 1_000,
+    });
+  });
+
+  it("repairs active detached records from result artifacts before marking them stale", () => {
+    const root = tempRoot();
+    const writer = new DurableRunStore(root, { ownerPid: 111, now: () => 1_000 });
+    writer.write(record({ id: "detached", status: "running", detachedRun: { pid: 333, runDir: join(root, "detached") } }));
+    writeFileSync(join(root, "detached", "result.md"), "done", "utf8");
+    writeFileSync(join(root, "detached", "result.json"), JSON.stringify({ success: true, state: "complete", output: "done" }), "utf8");
+
+    const reconciler = new DurableRunStore(root, {
+      ownerPid: 222,
+      now: () => 2_000,
+      isProcessAlive: () => false,
+    });
+
+    const result = reconciler.reconcileStaleRuns();
+
+    expect(result.active).toEqual([]);
+    expect(result.reconciled.map((s) => s.id)).toEqual(["detached"]);
+    expect(readStatus(root, "detached")).toMatchObject({
+      id: "detached",
+      status: "completed",
+      completedAt: 2_000,
+      updatedAt: 2_000,
+      resultPath: join(root, "detached", "result.md"),
+      resultPreview: "done",
+    });
+    expect(reconciler.readResult("detached")).toBe("done");
   });
 });
