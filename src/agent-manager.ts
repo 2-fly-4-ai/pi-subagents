@@ -178,6 +178,54 @@ export class AgentManager {
 
   private startDetachedAgent(id: string, record: AgentRecord, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): void {
     const modelCandidates = [options.model, ...(options.fallbackModels ?? [])];
+    let livePoll: ReturnType<typeof setInterval> | undefined;
+    let observedToolUses = 0;
+    let observedTurnCount = 0;
+    let lastPreview = "";
+
+    const syncDetachedLiveStatus = () => {
+      const status = this.durableRunStore?.get(id) as (DurableRunStatus & { activeTools?: string[] }) | undefined;
+      if (!status || status.status !== "running") return;
+
+      if (typeof status.toolUses === "number" && status.toolUses > observedToolUses) {
+        const delta = status.toolUses - observedToolUses;
+        observedToolUses = status.toolUses;
+        record.toolUses = Math.max(record.toolUses, status.toolUses);
+        for (let index = 0; index < delta; index++) {
+          options.onToolActivity?.({ type: "end", toolName: "tool" });
+        }
+      }
+
+      if (typeof status.turnCount === "number" && status.turnCount !== observedTurnCount) {
+        observedTurnCount = status.turnCount;
+        record.turnCount = status.turnCount;
+        options.onTurnEnd?.(status.turnCount);
+        this.checkNeedsAttention(record);
+      }
+
+      const activeTools = Array.isArray(status.activeTools) ? status.activeTools.filter(Boolean) : [];
+      const preview = activeTools.length > 0
+        ? `running ${activeTools.join(", ")}…`
+        : status.resultPreview ?? "";
+      if (preview && preview !== lastPreview) {
+        lastPreview = preview;
+        options.onTextDelta?.("", preview);
+      }
+    };
+
+    const startLivePoll = () => {
+      if (livePoll) return;
+      syncDetachedLiveStatus();
+      livePoll = setInterval(syncDetachedLiveStatus, 500);
+      livePoll.unref?.();
+    };
+
+    const stopLivePoll = () => {
+      if (!livePoll) return;
+      clearInterval(livePoll);
+      livePoll = undefined;
+    };
+
     const runAttempt = async (attemptIndex: number): Promise<string> => {
       const model = modelCandidates[attemptIndex];
       const handle = spawnDetachedRun({
@@ -192,7 +240,9 @@ export class AgentManager {
       });
       record.detachedRun = { pid: handle.pid, runDir: handle.paths.runDir };
       this.persist(record);
+      startLivePoll();
       const result = await handle.promise;
+      syncDetachedLiveStatus();
       const success = result.state === "paused" || (result.exitCode === 0 && !result.signal);
       if (!success && attemptIndex < modelCandidates.length - 1 && isRetryableModelFailure(result.error ?? result.output)) {
         record.modelAttempts = [...(record.modelAttempts ?? []), { model: modelLabel(model), success: false, error: result.error ?? result.output }];
@@ -219,6 +269,7 @@ export class AgentManager {
         return "";
       })
       .finally(() => {
+        stopLivePoll();
         this.runningBackground--;
         try { this.onComplete?.(record); } catch { /* ignore completion side-effect errors */ }
         this.drainQueue();

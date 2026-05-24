@@ -23,6 +23,7 @@ export interface DurableRunStatus {
   resultPath?: string;
   error?: string;
   turnCount?: number;
+  activeTools?: string[];
   needsAttentionAt?: number;
   needsAttentionReason?: "time_threshold" | "turn_threshold" | "token_threshold";
   modelAttempts?: { model: string; success: boolean; error?: string }[];
